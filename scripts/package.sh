@@ -11,16 +11,16 @@ TARGET=${TARGET:-"${OS}-${ARCH}"}
 if [ -n "${ANDROID_ROOT:-}" ] || [ -n "${TERMUX_VERSION:-}" ]; then
   TARGET="android-${ARCH}"
 fi
-NAME="spec-${VERSION}-${TARGET}"
+NAME="xcc-${VERSION}-${TARGET}"
 DIST="$ROOT/dist"
 STAGE="$DIST/$NAME"
 
 cargo build --release
 
-rm -f "$DIST"/spec-*.tar.gz "$DIST"/SHA256SUMS
+rm -f "$DIST"/xcc-*.tar.gz "$DIST"/SHA256SUMS
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-cp "$ROOT/target/release/spec" "$STAGE/spec"
+cp "$ROOT/target/release/xcc" "$STAGE/xcc"
 cp "$ROOT/README.md" "$STAGE/README.md"
 cp "$ROOT/LICENSE" "$STAGE/LICENSE"
 cp "$ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
