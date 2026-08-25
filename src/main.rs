@@ -460,7 +460,7 @@ fn reset_ui_surface_to_tui(home: &Path) {
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("spec {}", env!("CARGO_PKG_VERSION"));
+        println!("xcc-switch {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let home = config::home();

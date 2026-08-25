@@ -35,3 +35,7 @@ tempfile = "3"
 opt-level = 3
 lto = true
 strip = true
+
+[[bin]]
+name = "xcc"
+path = "src/main.rs"

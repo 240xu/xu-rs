@@ -3,20 +3,22 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PREFIX_DIR=${PREFIX:-/data/data/com.termux/files/usr}
-SPEC="$PREFIX_DIR/bin/spec"
+SPEC="$PREFIX_DIR/bin/xcc"
 
-if [ ! -x "$ROOT/spec" ]; then
-  printf 'error: spec binary not found next to install-termux.sh\n' >&2
+if [ ! -x "$ROOT/xcc" ]; then
+  printf 'error: xcc binary not found next to install-termux.sh\n' >&2
   exit 1
 fi
 
 mkdir -p "$PREFIX_DIR/bin"
-if [ -e "$PREFIX_DIR/bin/spec" ]; then
-  cp "$PREFIX_DIR/bin/spec" "$PREFIX_DIR/bin/spec.before-release-install.bak"
+if [ -e "$PREFIX_DIR/bin/xcc" ]; then
+  cp "$PREFIX_DIR/bin/xcc" "$PREFIX_DIR/bin/xcc.before-release-install.bak"
 fi
-install -m 0755 "$ROOT/spec" "$PREFIX_DIR/bin/spec"
+# 兼容旧命令名：保留 spec 指向 xcc 的软链，避免既有脚本断链
+ln -sf "$SPEC" "$PREFIX_DIR/bin/spec"
+install -m 0755 "$ROOT/xcc" "$PREFIX_DIR/bin/xcc"
 
-printf 'installed spec to %s\n' "$PREFIX_DIR/bin/spec"
+printf 'installed xcc (spec alias kept) to %s\n' "$PREFIX_DIR/bin/spec"
 
 if [ "${1:-}" = "--setup-agents" ]; then
   exec "$SPEC" agent setup --yes
@@ -75,5 +77,5 @@ PROXYEOF
   exit 0
 fi
 
-printf 'to install/update all three agents, run:\n  spec agent setup --yes\n'
-printf 'to install spec + configure zen on all three clients, run:\n  ./install-termux.sh --setup-zen\n'
+printf 'to install/update all three agents, run:\n  xcc agent setup --yes\n'
+printf 'to install xcc + configure zen on all three clients, run:\n  ./install-termux.sh --setup-zen\n'

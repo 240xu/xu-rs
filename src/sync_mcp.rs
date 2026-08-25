@@ -365,10 +365,7 @@ mod tests {
         assert_eq!(servers["memory"]["env"]["MODE"].as_str(), Some("safe"));
         assert!(servers["memory"].get("type").is_none());
         assert_eq!(servers["cf-memory"]["type"].as_str(), Some("http"));
-        assert_eq!(
-            servers["cf-memory"]["url"],
-            "https://mcp.example.com/mcp"
-        );
+        assert_eq!(servers["cf-memory"]["url"], "https://mcp.example.com/mcp");
         assert_eq!(
             servers["cf-memory"]["headers"]["Authorization"],
             "Bearer token"
