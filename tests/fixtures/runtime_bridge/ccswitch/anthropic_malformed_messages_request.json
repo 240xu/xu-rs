@@ -1,0 +1,6 @@
+{
+  "model": "fixture-anthropic-model",
+  "max_tokens": 96,
+  "stream": false,
+  "messages": "not-an-array"
+}

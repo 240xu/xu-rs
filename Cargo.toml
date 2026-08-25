@@ -1,0 +1,37 @@
+[package]
+name = "spec"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal provider switcher for OpenCode, Claude Code, and Codex"
+license = "MIT"
+readme = "README.md"
+keywords = ["opencode", "claude-code", "codex", "provider", "tui"]
+categories = ["command-line-utilities", "config"]
+
+[dependencies]
+libc = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks"] }
+dirs = "6"
+chrono = "0.4"
+unicode-width = "0.2"
+textwrap = "0.16"
+regex = "1"
+toml = "0.8"
+toml_edit = "0.22"
+serde_with = "3"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

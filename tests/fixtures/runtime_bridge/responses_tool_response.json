@@ -1,0 +1,31 @@
+{
+  "id": "resp_fixture_tool_response",
+  "object": "response",
+  "created_at": 1700000000,
+  "model": "fixture-responses-model",
+  "status": "completed",
+  "output": [
+    {
+      "id": "fc_fixture_weather",
+      "type": "function_call",
+      "status": "completed",
+      "call_id": "call_fixture_weather",
+      "name": "get_fixture_weather",
+      "arguments": "{\"city\":\"fixture-city\"}"
+    }
+  ],
+  "output_text": "",
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 8,
+    "total_tokens": 20,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "error": null
+}

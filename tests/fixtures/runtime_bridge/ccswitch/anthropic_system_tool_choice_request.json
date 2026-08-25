@@ -1,0 +1,37 @@
+{
+  "model": "fixture-anthropic-model",
+  "max_tokens": 96,
+  "stream": false,
+  "system": [
+    {
+      "type": "text",
+      "text": "fixture system instruction"
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "pick the weather tool"
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "tool",
+    "name": "get_fixture_weather"
+  }
+}

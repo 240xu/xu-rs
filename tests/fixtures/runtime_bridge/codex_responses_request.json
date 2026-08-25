@@ -1,0 +1,132 @@
+{
+  "model": "deepseek-v4-flash-free_zen",
+  "instructions": "You are Codex, a coding agent based on deepseek-v4-flash-free. You and the user share one workspace, and your job is to collaborate with them until their goal is genuinely handled.",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_fixture_developer",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<skills_instructions>\n## Skills\nA skill is a set of instructions provided through a `SKILL.md` source.\n</skills_instructions>"
+        },
+        {
+          "type": "input_text",
+          "text": "<developer_instructions>\nBe careful to follow the rules in the developer instructions above.\n</developer_instructions>"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_fixture_user",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture codex user turn"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "description": "run a shell command",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          }
+        },
+        "required": ["command"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "write_stdin",
+      "description": "write to a process stdin",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "process_id": {
+            "type": "integer"
+          }
+        },
+        "required": ["process_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "update_plan",
+      "description": "update the plan",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": ["status"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "custom",
+      "name": "apply_patch",
+      "description": "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+      "format": {
+        "type": "grammar",
+        "syntax": "lark",
+        "definition": "start: begin_patch"
+      }
+    },
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "description": "Tools for spawning and managing sub-agents.",
+      "tools": [
+        {
+          "type": "function",
+          "name": "spawn_agent",
+          "description": "Spawn a new agent",
+          "strict": false,
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "task": {
+                "type": "string"
+              }
+            },
+            "required": ["task"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    {
+      "type": "web_search",
+      "external_web_access": true,
+      "search_content_types": ["text", "image"]
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": false,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "store": false,
+  "stream": true,
+  "include": ["reasoning.encrypted_content"],
+  "prompt_cache_key": "fixture-prompt-cache-key",
+  "client_metadata": {
+    "fixture_turn_id": "fixture-turn-id"
+  }
+}

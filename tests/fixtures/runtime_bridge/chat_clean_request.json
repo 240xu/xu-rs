@@ -1,0 +1,63 @@
+{
+  "model": "fixture-chat-clean-model",
+  "stream": false,
+  "messages": [
+    {
+      "role": "system",
+      "content": "fixture system instruction"
+    },
+    {
+      "role": "developer",
+      "content": "fixture developer instruction"
+    },
+    {
+      "role": "user",
+      "content": "fixture tool request"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_fixture_weather",
+          "type": "function",
+          "function": {
+            "name": "get_fixture_weather",
+            "arguments": "{\"city\":\"fixture-city\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_fixture_weather",
+      "content": "fixture weather result"
+    },
+    {
+      "role": "user",
+      "content": "fixture follow-up after tool results"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_fixture_weather",
+        "description": "Return fixture weather data",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": ["city"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "reasoning_effort": "medium",
+  "max_tokens": 128
+}

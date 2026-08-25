@@ -1,0 +1,94 @@
+{
+  "model": "fixture-responses-compatible-model",
+  "stream": false,
+  "instructions": "fixture responses instruction",
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture developer instruction"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture tool request"
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_fixture_weather",
+      "name": "get_fixture_weather",
+      "arguments": "{\"city\":\"fixture-city\"}"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_fixture_time",
+      "name": "get_fixture_time",
+      "arguments": "{\"zone\":\"fixture-zone\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture_weather",
+      "output": "fixture weather result"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture_time",
+      "output": "fixture time result"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture follow-up after tool results"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "get_fixture_time",
+      "description": "Return fixture time data",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": ["zone"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "max_output_tokens": 160
+}

@@ -1,0 +1,21 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_fixture_single_tool","object":"response","created_at":1700000000,"model":"fixture-responses-model","status":"in_progress","output":[],"usage":null}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_fixture_single_tool","object":"response","created_at":1700000000,"model":"fixture-responses-model","status":"in_progress","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","response_id":"resp_fixture_single_tool","output_index":0,"item":{"id":"fc_fixture_weather","type":"function_call","status":"in_progress","call_id":"call_fixture_weather","name":"get_fixture_weather","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_fixture_weather","output_index":0,"delta":"{\"city\":\"fixture-city\"}"}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_fixture_weather","output_index":0,"arguments":"{\"city\":\"fixture-city\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","response_id":"resp_fixture_single_tool","output_index":0,"item":{"id":"fc_fixture_weather","type":"function_call","status":"completed","call_id":"call_fixture_weather","name":"get_fixture_weather","arguments":"{\"city\":\"fixture-city\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture_single_tool","object":"response","created_at":1700000000,"model":"fixture-responses-model","status":"completed","output":[{"id":"fc_fixture_weather","type":"function_call","status":"completed","call_id":"call_fixture_weather","name":"get_fixture_weather","arguments":"{\"city\":\"fixture-city\"}"}],"usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16},"error":null}}
+: eof

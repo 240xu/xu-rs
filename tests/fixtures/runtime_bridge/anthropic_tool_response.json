@@ -1,0 +1,22 @@
+{
+  "id": "msg_fixture_tool_response",
+  "type": "message",
+  "role": "assistant",
+  "model": "fixture-anthropic-model",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "call_fixture_weather",
+      "name": "get_fixture_weather",
+      "input": {
+        "city": "fixture-city"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 8
+  }
+}

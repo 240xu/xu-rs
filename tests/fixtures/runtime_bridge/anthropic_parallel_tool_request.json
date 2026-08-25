@@ -1,0 +1,85 @@
+{
+  "model": "fixture-anthropic-model",
+  "max_tokens": 128,
+  "stream": false,
+  "system": "fixture system instruction",
+  "messages": [
+    {
+      "role": "user",
+      "content": "fixture tool request"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_fixture_weather",
+          "name": "get_fixture_weather",
+          "input": {
+            "city": "fixture-city"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "call_fixture_time",
+          "name": "get_fixture_time",
+          "input": {
+            "zone": "fixture-zone"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_fixture_weather",
+          "content": "fixture weather result"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_fixture_time",
+          "content": "fixture time result"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "fixture follow-up after tool results"
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_fixture_time",
+      "description": "Return fixture time data",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": ["zone"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "auto"
+  }
+}

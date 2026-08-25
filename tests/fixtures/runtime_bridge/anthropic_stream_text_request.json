@@ -1,0 +1,16 @@
+{
+  "model": "fixture-anthropic-stream-model",
+  "max_tokens": 96,
+  "stream": false,
+  "system": "fixture system instruction",
+  "messages": [
+    {
+      "role": "user",
+      "content": "fixture text request"
+    }
+  ],
+  "temperature": 0.2,
+  "metadata": {
+    "fixture_id": "anthropic_stream_text_request"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "model": "fixture-responses-compatible-model",
+  "stream": true,
+  "instructions": "fixture responses instruction",
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture developer instruction"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture compatible request"
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_fixture_weather",
+      "name": "get_fixture_weather",
+      "arguments": "{\"city\":\"fixture-city\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture_weather",
+      "output": "fixture weather result"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture compatible follow-up"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "custom",
+      "name": "apply_patch",
+      "description": "Apply a diff to files",
+      "format": "diff"
+    },
+    {
+      "type": "function",
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "max_output_tokens": 160,
+  "temperature": 0.3,
+  "top_p": 0.7,
+  "stop": ["STOP"],
+  "metadata": {
+    "fixture_id": "responses_custom_tool_request"
+  }
+}

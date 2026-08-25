@@ -1,0 +1,335 @@
+{
+ "reference": {
+  "repository": "farion1231/cc-switch",
+  "commit": "413c09e0790c304506888ae24b9be72820aca126"
+ },
+ "comparison_scope": "behavior semantics only; do not copy CC Switch product architecture",
+ "source_files": [
+  "src-tauri/src/proxy/providers/transform.rs",
+  "src-tauri/src/proxy/providers/transform_responses.rs",
+  "src-tauri/src/proxy/providers/transform_codex_chat.rs",
+  "src-tauri/src/proxy/providers/streaming.rs",
+  "src-tauri/src/proxy/providers/streaming_responses.rs",
+  "src-tauri/src/proxy/providers/streaming_codex_chat.rs",
+  "src-tauri/src/proxy/providers/reasoning_bridge.rs",
+  "src-tauri/src/proxy/providers/claude.rs",
+  "src-tauri/src/proxy/handlers.rs"
+ ],
+ "cases": [
+  {
+   "id": "anthropic_system_and_named_tool_choice_to_chat",
+   "kind": "request",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_system_tool_choice_request",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "system and named tool choice are representable in Chat",
+    "error_field": null,
+    "behavior": "preserves the system instruction and converts typed tool choice to a named Chat function choice",
+    "fields": {
+     "/messages/0/role": "system",
+     "/messages/0/content": "fixture system instruction",
+     "/tools/0/type": "function",
+     "/tools/0/function/name": "get_fixture_weather",
+     "/tool_choice/type": "function",
+     "/tool_choice/function/name": "get_fixture_weather"
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "system and named tool choice are representable in Chat",
+    "error_field": null,
+    "fields": {
+     "/messages/0/role": "system",
+     "/messages/0/content": "fixture system instruction",
+     "/tools/0/type": "function",
+     "/tools/0/function/name": "get_fixture_weather",
+     "/tool_choice/type": "function",
+     "/tool_choice/function/name": "get_fixture_weather"
+    }
+   }
+  },
+  {
+   "id": "chat_parallel_tool_calls_to_responses",
+   "kind": "request",
+   "source_protocol": "open_ai_chat",
+   "target_protocol": "open_ai_responses",
+   "fixture": "ccswitch_chat_parallel_tool_calls_request",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "parallel calls and stable call ids are representable in Responses",
+    "error_field": null,
+    "behavior": "keeps parallel tool calls and emits ordered function_call items with stable call ids",
+    "fields": {
+     "/parallel_tool_calls": true,
+     "/input/2/type": "function_call",
+     "/input/2/call_id": "call_fixture_weather",
+     "/input/3/type": "function_call",
+     "/input/3/call_id": "call_fixture_time",
+     "/input/4/type": "function_call_output",
+     "/input/4/call_id": "call_fixture_weather",
+     "/input/5/type": "function_call_output",
+     "/input/5/call_id": "call_fixture_time"
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "parallel calls and stable call ids are representable in Responses",
+    "error_field": null,
+    "fields": {
+     "/parallel_tool_calls": true,
+     "/input/2/type": "function_call",
+     "/input/2/call_id": "call_fixture_weather",
+     "/input/3/type": "function_call",
+     "/input/3/call_id": "call_fixture_time",
+     "/input/4/type": "function_call_output",
+     "/input/4/call_id": "call_fixture_weather",
+     "/input/5/type": "function_call_output",
+     "/input/5/call_id": "call_fixture_time"
+    }
+   }
+  },
+  {
+   "id": "responses_reasoning_to_anthropic",
+   "kind": "request",
+   "source_protocol": "open_ai_responses",
+   "target_protocol": "anthropic_messages",
+   "fixture": "ccswitch_responses_reasoning_request",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "the reasoning summary and opaque envelope are recoverable",
+    "error_field": null,
+    "behavior": "retains reasoning summary and opaque encrypted reasoning metadata across the conversion",
+    "fields": {
+     "/system": "fixture instructions\n\nfixture developer instruction",
+     "/messages/1/role": "assistant",
+     "/messages/1/content/0/type": "thinking",
+     "/messages/1/content/0/thinking": "fixture reasoning",
+     "/messages/1/content/0/signature": {
+      "starts_with": "ccswitch-openai-reasoning-v1:"
+     }
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "the reasoning summary and opaque envelope are recoverable",
+    "error_field": null,
+    "fields": {
+     "/system": "fixture instructions\n\nfixture developer instruction",
+     "/messages/1/role": "assistant",
+     "/messages/1/content/0/type": "thinking",
+     "/messages/1/content/0/thinking": "fixture reasoning",
+     "/messages/1/content/0/signature": {
+      "starts_with": "ccswitch-openai-reasoning-v1:"
+     }
+    }
+   }
+  },
+  {
+   "id": "anthropic_malformed_messages_to_chat",
+   "kind": "request",
+   "stage": "parse_request",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_malformed_messages_request",
+   "input_problem": {
+    "path": "/messages",
+    "kind": "wrong_type",
+    "actual_type": "string",
+    "expected_type": "array",
+    "description": "messages must be an array"
+   },
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "the generic transformer emits an empty messages array",
+    "error_field": null,
+    "behavior": "parses JSON into a generic value and the Chat transformer emits an empty messages array when messages is not an array",
+    "fields": {
+     "/messages": []
+    }
+   },
+   "comparison": "mismatch",
+   "xu": {
+    "result": "reject",
+    "error_category": "invalid_request",
+    "http_status": 400,
+    "reason_code": "invalid request",
+    "reason_detail": "messages must be an array",
+    "error_field": "/messages"
+   }
+  },
+  {
+   "id": "anthropic_document_to_chat_is_fail_closed",
+   "kind": "request",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_document_request",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "the Chat transformer drops the unsupported document block",
+    "error_field": null,
+    "behavior": "the Chat transformer has no document branch, so it drops the document block and preserves the accompanying text; the separate Responses transformer maps supported documents to input_file",
+    "fields": {
+     "/messages/0/role": "user",
+     "/messages/0/content": "describe this image"
+    }
+   },
+   "comparison": "mismatch",
+   "xu": {
+    "result": "reject",
+    "error_category": "unsupported",
+    "http_status": 400,
+    "reason_code": "unsupported request field",
+    "error_field": "messages.content",
+    "reason_detail": "Xu intentionally rejects document content when the target Chat bridge cannot represent it"
+   }
+  },
+  {
+   "id": "anthropic_cache_write_usage_to_chat_is_fail_closed",
+   "kind": "response",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_cache_write_response",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "cache-write dropped; input/output/cache-read mapped (normalized full input)",
+    "error_field": null,
+    "behavior": "maps input, output, and cache-read usage fields into the target response",
+    "fields": {
+     "/usage/prompt_tokens": 19,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 23,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "error_category": null,
+    "http_status": 200,
+    "reason_code": "accepted",
+    "reason_detail": "cache-write has no Chat field; dropped like the streaming path (clients see input/output/cache-read)",
+    "error_field": null,
+    "behavior": "drops cache-write, maps input/output/cache-read into the target response",
+    "fields": {
+     "/usage/prompt_tokens": 19,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 23,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   }
+  },
+  {
+   "id": "anthropic_zero_cache_write_usage_to_chat_is_lossless_noop",
+   "kind": "response",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_zero_cache_write_response",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "input, output, and cache-read usage are mapped to Chat usage",
+    "error_field": null,
+    "behavior": "maps input, output, and cache-read usage fields into the target response",
+    "fields": {
+     "/usage/prompt_tokens": 14,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 18,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "anthropic billed input is normalized to the full input (12 + 2 cache-read) so the direct round-trip bills exactly once; zero cache-write usage is a lossless no-op",
+    "error_field": null,
+    "fields": {
+     "/usage/prompt_tokens": 14,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 18,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   }
+  },
+  {
+   "id": "anthropic_cache_read_usage_to_chat",
+   "kind": "response",
+   "source_protocol": "anthropic_messages",
+   "target_protocol": "open_ai_chat",
+   "fixture": "ccswitch_anthropic_cache_read_response",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "input, output, and cache-read usage are mapped to Chat usage",
+    "error_field": null,
+    "behavior": "maps input, output, and cache-read usage fields into the target response",
+    "fields": {
+     "/usage/prompt_tokens": 14,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 18,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "anthropic billed input is normalized to the full input (12 + 2 cache-read) before mapping to Chat usage",
+    "error_field": null,
+    "fields": {
+     "/usage/prompt_tokens": 14,
+     "/usage/completion_tokens": 4,
+     "/usage/total_tokens": 18,
+     "/usage/prompt_tokens_details/cached_tokens": 2
+    }
+   }
+  },
+  {
+   "id": "chat_length_to_responses_incomplete",
+   "kind": "response",
+   "source_protocol": "open_ai_chat",
+   "target_protocol": "open_ai_responses",
+   "fixture": "ccswitch_chat_length_response",
+   "cc_switch": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "length termination is represented by Responses incomplete status",
+    "error_field": null,
+    "behavior": "maps Chat length termination to Responses incomplete status",
+    "fields": {
+     "/status": "incomplete",
+     "/output_text": "fixture partial response",
+     "/usage/input_tokens": 12,
+     "/usage/output_tokens": 4
+    }
+   },
+   "comparison": "match",
+   "xu": {
+    "result": "accept",
+    "reason_code": "accepted",
+    "reason_detail": "length termination is represented by Responses incomplete status",
+    "error_field": null,
+    "fields": {
+     "/status": "incomplete",
+     "/output_text": "fixture partial response",
+     "/usage/input_tokens": 12,
+     "/usage/output_tokens": 4
+    }
+   }
+  }
+ ]
+}

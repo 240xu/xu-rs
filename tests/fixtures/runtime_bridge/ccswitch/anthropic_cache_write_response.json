@@ -1,0 +1,20 @@
+{
+  "id": "msg_fixture_text",
+  "type": "message",
+  "role": "assistant",
+  "model": "fixture-anthropic-model",
+  "content": [
+    {
+      "type": "text",
+      "text": "fixture response text"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 4,
+    "cache_read_input_tokens": 2,
+    "cache_creation_input_tokens": 5
+  }
+}

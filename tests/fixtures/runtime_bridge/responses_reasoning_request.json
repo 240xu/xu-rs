@@ -1,0 +1,113 @@
+{
+  "model": "fixture-responses-model",
+  "stream": false,
+  "instructions": "fixture instructions",
+  "input": [
+    {
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture developer instruction"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture reasoning request"
+        }
+      ]
+    },
+    {
+      "id": "rs_fixture_1",
+      "type": "reasoning",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "fixture reasoning"
+        }
+      ],
+      "encrypted_content": "ccswitch-openai-reasoning-v1:eyJpZCI6InJzX2ZpeHR1cmVfMSIsInR5cGUiOiJyZWFzb25pbmciLCJzdW1tYXJ5IjpbeyJ0eXBlIjoic3VtbWFyeV90ZXh0IiwidGV4dCI6ImZpeHR1cmUgcmVhc29uaW5nIn1dLCJlbmNyeXB0ZWRfY29udGVudCI6ImZpeHR1cmUtb3BhcXVlIn0"
+    },
+    {
+      "id": "fc_fixture_weather",
+      "type": "function_call",
+      "call_id": "call_fixture_weather",
+      "name": "get_fixture_weather",
+      "arguments": "{\"city\":\"fixture-city\"}",
+      "status": "completed"
+    },
+    {
+      "id": "fc_fixture_time",
+      "type": "function_call",
+      "call_id": "call_fixture_time",
+      "name": "get_fixture_time",
+      "arguments": "{\"zone\":\"fixture-zone\"}",
+      "status": "completed"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture_weather",
+      "output": "fixture weather result"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture_time",
+      "output": "fixture time result"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture follow-up after tool results"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "get_fixture_time",
+      "description": "Return fixture time data",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "high"
+  },
+  "max_output_tokens": 160
+}

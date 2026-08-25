@@ -1,0 +1,37 @@
+{
+  "model": "fixture-responses-model",
+  "stream": false,
+  "instructions": "fixture instructions",
+  "input": [
+    {
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture developer instruction"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "fixture reasoning request"
+        }
+      ]
+    },
+    {
+      "id": "rs_task10_1",
+      "type": "reasoning",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "fixture reasoning"
+        }
+      ],
+      "encrypted_content": "ccswitch-openai-reasoning-v1:fixture-opaque"
+    }
+  ],
+  "max_output_tokens": 160
+}

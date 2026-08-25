@@ -1,0 +1,62 @@
+{
+  "model": "fixture-anthropic-model",
+  "max_tokens": 128,
+  "stream": false,
+  "system": "fixture system instruction",
+  "messages": [
+    {
+      "role": "user",
+      "content": "fixture tool request"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "call_fixture_weather",
+          "name": "get_fixture_weather",
+          "input": {
+            "city": "fixture-city"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "call_fixture_weather",
+          "content": "fixture weather result"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "fixture follow-up after tool results"
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_fixture_weather",
+      "description": "Return fixture weather data",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "auto"
+  },
+  "temperature": 0.2,
+  "metadata": {
+    "fixture_id": "anthropic_tool_request"
+  }
+}

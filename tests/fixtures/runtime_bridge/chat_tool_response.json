@@ -1,0 +1,31 @@
+{
+  "id": "chatcmpl_fixture_tool_response",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "fixture-chat-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_fixture_weather",
+            "type": "function",
+            "function": {
+              "name": "get_fixture_weather",
+              "arguments": "{\"city\":\"fixture-city\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 8,
+    "total_tokens": 20
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "model": "fixture-chat-model",
+  "stream": false,
+  "messages": [
+    {
+      "role": "system",
+      "content": "fixture system instruction"
+    },
+    {
+      "role": "developer",
+      "content": "fixture developer instruction"
+    },
+    {
+      "role": "user",
+      "content": "fixture text request"
+    }
+  ],
+  "temperature": 0.2,
+  "max_tokens": 96
+}

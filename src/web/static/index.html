@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spec 控制台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand-block">
+      <span class="brand">spec 控制台</span>
+      <span class="eyebrow">LOCAL OPERATOR LEDGER</span>
+    </div>
+    <nav class="tabs" id="tabs"></nav>
+  </header>
+
+  <section class="status-strip" aria-label="状态摘要">
+    <div class="stat"><span class="stat-label">PROVIDERS</span><span class="stat-value" id="stat-providers">—</span></div>
+    <div class="stat"><span class="stat-label">HEALTHY</span><span class="stat-value" id="stat-healthy">—</span></div>
+    <div class="stat"><span class="stat-label">RUNTIME</span><span class="stat-value stat-runtime" id="stat-runtime">—</span></div>
+  </section>
+
+  <main id="content" class="content"></main>
+
+  <section class="log">
+    <div class="log-head">命令输出</div>
+    <pre id="log" class="log-body"></pre>
+  </section>
+
+  <button id="stop-btn" class="fab-switch" title="停止 Web 控制台并回到终端 TUI">⇄ 切回 TUI</button>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
