@@ -26,8 +26,8 @@ pub mod http;
 #[cfg(not(test))]
 mod http;
 use http::{
-    read_http_request, write_json, write_raw_headers, write_sse, write_sse_done, write_sse_frame,
-    HttpRequest, MAX_BODY_BYTES,
+    drain_incoming, read_http_request, write_json, write_raw_headers, write_sse, write_sse_done,
+    write_sse_frame, HttpRequest, MAX_BODY_BYTES,
 };
 
 const RUNTIME_HOP_HEADER: &str = "x-spec-runtime-hop";
@@ -159,7 +159,7 @@ impl ConnectionSlots {
     }
 
     /// 非阻塞获取；槽满返回 None（accept 层立即 503，防止无界线程堆积）。
-    fn try_acquire(&self) -> Option<SlotGuard<'_>> {
+    fn try_acquire(self: &Arc<Self>) -> Option<OwnedSlotGuard> {
         let mut state = self
             .state
             .lock()
@@ -168,7 +168,9 @@ impl ConnectionSlots {
             return None;
         }
         state.used += 1;
-        Some(SlotGuard { slots: self })
+        Some(OwnedSlotGuard {
+            slots: Arc::clone(self),
+        })
     }
 
     /// 阻塞获取（测试专用语义）：生产 accept 路径已改用 try_acquire 有界排队。
@@ -195,6 +197,18 @@ impl ConnectionSlots {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.used = state.used.saturating_sub(1);
         self.available.notify_one();
+    }
+}
+
+/// 线程安全持有版槽位守卫：accept 循环获取、随 worker 线程 move，
+/// 保证槽位在连接整个生命周期内被占用。
+struct OwnedSlotGuard {
+    slots: Arc<ConnectionSlots>,
+}
+
+impl Drop for OwnedSlotGuard {
+    fn drop(&mut self) {
+        self.slots.release();
     }
 }
 
@@ -445,9 +459,14 @@ pub fn serve(home: &Path) -> Result<(), String> {
                         503,
                         json!({ "error": { "type": "overloaded", "message": "server busy" } }),
                     );
+                    // 排空未读请求字节再关：否则 drop 触发 RST，客户端收不到 503。
+                    drain_incoming(&mut stream, Duration::from_millis(30));
                     continue;
                 };
                 std::thread::spawn(move || {
+                    // guard 必须随线程持有（OwnedSlotGuard）：留在 accept 作用域
+                    // 会提前 release，并发上限形同虚设（P0 教训）。
+                    let _slot_guard = _slot_guard;
                     let mut count_guard = ConnectionCountGuard::new(Arc::clone(&stats));
                     count_guard.mark_active();
                     let result = handle_connection(&mut stream, &home, &profiles, &stats);
@@ -514,7 +533,8 @@ fn handle_connection_with_timeout(
         Ok(request) => request,
         Err(error) if is_socket_read_timeout(&error) => {
             write_bridge_error(stream, bridge::BridgeError::Timeout)?;
-            return Err(error);
+            // 504 信封已写出：返回 Ok 防止外层再补写第二个响应（双响应 P1）。
+            return Ok(());
         }
         Err(error) => {
             let error = if error.contains("too large") {
@@ -4571,7 +4591,8 @@ mod tests {
             Err(error) => panic!("read failed: {error}"),
         };
         let server_result = server.join().unwrap();
-        assert!(server_result.is_err(), "read timeout must surface as error");
+        // 超时分支已写出 504 信封并返回 Ok（防外层补写第二响应）。
+        assert!(server_result.is_ok(), "timeout must not double-respond");
         assert!(
             read == 0 || String::from_utf8_lossy(&buf[..read]).contains("504"),
             "client must see timeout response"

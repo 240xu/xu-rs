@@ -3466,9 +3466,10 @@ fn reasoning_streaming_routes_cover_representable_directions() {
         }
 
         if direction.source == ProtocolKind::OpenAiChat {
+            // Chat 流式推理增量折叠为正文（对齐非流式降级），不再 safe-error。
             assert!(
-                body.contains("invalid_upstream"),
-                "missing safe error: {body}"
+                body.contains("fixture reasoning"),
+                "chat stream must fold reasoning delta into content: {body}"
             );
             assert!(body.contains("[DONE]"), "missing Chat terminal: {body}");
         } else {

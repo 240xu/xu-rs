@@ -194,9 +194,26 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+/// 非阻塞排空 socket 中尚未读取的请求字节（限时），避免 drop 时 RST 吞掉已写响应。
+pub(super) fn drain_incoming(stream: &mut std::net::TcpStream, budget: std::time::Duration) {
+    use std::time::Instant;
+    let start = Instant::now();
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(10)));
+    let mut sink = [0u8; 4096];
+    while start.elapsed() < budget {
+        match stream.read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = stream.set_read_timeout(None);
+}
+
 pub(super) fn write_json(stream: &mut TcpStream, status: u16, body: Value) -> Result<(), String> {
     let status_text = match status {
         200 => "OK",
+        503 => "Service Unavailable",
         400 => "Bad Request",
         413 => "Payload Too Large",
         502 => "Bad Gateway",

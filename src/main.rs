@@ -497,7 +497,8 @@ fn main() {
             Ok(()) => return,
             Err(error) => {
                 // 端口占用等失败必须给出逃生门：回落 TUI 而不是反复锁死。
-                eprintln!("Web 控制台启动失败：{error}\n本次回落终端界面（下次启动仍尝试 Web；如需改回请运行: spec tui-reset）");
+                // 文案与行为一致：这里已把偏好改回 Tui（reset 见下一行）。
+                eprintln!("Web 控制台启动失败：{error}\n已回落终端界面，并把下次启动偏好改回 TUI（如需再试 Web: xcc tui-reset 后手动切回）");
                 reset_ui_surface_to_tui(&home);
             }
         }

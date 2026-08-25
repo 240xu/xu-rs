@@ -108,6 +108,20 @@ struct Request {
     method: String,
     path: String,
     body: Vec<u8>,
+    host: Option<String>,
+}
+
+/// 写操作 CSRF/DNS-rebinding 防线：浏览器发起的跨站 simple request 无法伪造
+/// Host 头；仅接受本机回环形态的 Host。
+fn host_is_local(request: &Request) -> bool {
+    request.host.as_deref().is_some_and(|host| {
+        host == "127.0.0.1"
+            || host.starts_with("127.0.0.1:")
+            || host == "localhost"
+            || host.starts_with("localhost:")
+            || host == "[::1]"
+            || host == "[::1]:"
+    })
 }
 
 /// Minimal HTTP/1.1 request parse: request line + exact-path target (query
@@ -142,11 +156,14 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         .map_or(raw_target, |(path, _)| path);
 
     let mut content_length = 0;
+    let mut host: Option<String> = None;
     for line in lines {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        if key.eq_ignore_ascii_case("content-length") {
+        if key.eq_ignore_ascii_case("host") {
+            host = Some(value.trim().to_ascii_lowercase());
+        } else if key.eq_ignore_ascii_case("content-length") {
             content_length = value.trim().parse::<usize>().unwrap_or(0);
         }
     }
@@ -169,6 +186,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         method,
         path: path.to_string(),
         body,
+        host,
     })
 }
 
@@ -216,11 +234,19 @@ fn route(home: &Path, request: &Request) -> RouteResponse {
         },
         ("GET", "/api/overview") => json_route(api::overview(home)),
         ("GET", "/api/providers") => json_route(api::providers(home)),
+        ("POST", "/api/command") if !host_is_local(request) => json_route((
+            403,
+            serde_json::json!({ "ok": false, "error": "cross-origin command rejected" }),
+        )),
         ("POST", "/api/command") => json_route(api::command(home, &request.body)),
         ("GET", "/api/mcp") => json_route(api::mcp_list(home)),
         ("GET", "/api/skills") => json_route(api::skills_list(home)),
         ("GET", "/api/stats") => json_route(api::stats(home)),
         ("GET", "/api/sessions") => json_route(api::sessions()),
+        ("POST", "/api/web/stop") if !host_is_local(request) => json_route((
+            403,
+            serde_json::json!({ "ok": false, "error": "cross-origin request rejected" }),
+        )),
         ("POST", "/api/web/stop") => {
             let (status, value) = api::web_stop(home);
             RouteResponse::StopWeb { status, value }

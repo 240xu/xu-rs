@@ -358,6 +358,22 @@ pub(super) fn encode_request(ir: &RequestIr, model: &str) -> Result<Value, Bridg
     }
     body.insert("messages".to_string(), Value::Array(messages));
     if !ir.tools.is_empty() {
+        // strict 回填必须按“原始声明索引”对位：deepseek 分支会按名排序，
+        // 位置 zip 会把 strict 挂到错误工具上（P2 地雷）。
+        let strict_by_name: std::collections::BTreeMap<&str, bool> = ir
+            .extensions
+            .get(super::request::EXT_CHAT_TOOL_STRICT_LIST)
+            .and_then(Value::as_array)
+            .map(|list| {
+                ir.tools
+                    .iter()
+                    .zip(list)
+                    .filter_map(|(tool, strict)| {
+                        strict.as_bool().map(|value| (tool.name.as_str(), value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut tools: Vec<Value> = if deepseek_cache {
             // DeepSeek prefix cache matches the full tools block byte-for-byte;
             // a stable name sort keeps the encoded block deterministic across
@@ -368,15 +384,19 @@ pub(super) fn encode_request(ir: &RequestIr, model: &str) -> Result<Value, Bridg
         } else {
             ir.tools.iter().map(encode_tool).collect::<Result<_, _>>()?
         };
-        // sanitizer 剥离的逐工具 strict 在此回填（顺序与 parse 一致）。
-        if let Some(Value::Array(strict_list)) =
-            ir.extensions.get(super::request::EXT_CHAT_TOOL_STRICT_LIST)
-        {
-            for (tool, strict) in tools.iter_mut().zip(strict_list) {
-                if let Some(strict) = strict.as_bool() {
-                    if let Some(function) = tool.get_mut("function").and_then(Value::as_object_mut)
-                    {
-                        function.insert("strict".to_string(), Value::Bool(strict));
+        if !strict_by_name.is_empty() {
+            for tool in tools.iter_mut() {
+                if let Some(name) = tool
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    if let Some(strict) = strict_by_name.get(name) {
+                        if let Some(function) =
+                            tool.get_mut("function").and_then(Value::as_object_mut)
+                        {
+                            function.insert("strict".to_string(), Value::Bool(*strict));
+                        }
                     }
                 }
             }
@@ -887,10 +907,10 @@ pub(super) fn encode_stream_event(
         StreamEventIr::TextDelta { text } => {
             frames.push(chat_frame(state, json!({ "content": text }), None, None));
         }
-        StreamEventIr::ReasoningDelta { .. } => {
-            return Err(BridgeError::Unsupported {
-                field: "chat.stream.reasoning".to_string(),
-            })
+        StreamEventIr::ReasoningDelta { text } => {
+            // 推理增量折叠为正文（对齐非流式 decode 的 reasoning_content→正文
+            // 降级）：headers 已写出，此处硬拒会让推理流必断。
+            frames.push(chat_frame(state, json!({ "content": text }), None, None));
         }
         StreamEventIr::ToolCallStarted(call) => {
             state.register_wire_tool(WireProtocol::OpenAiChat, call.index, &call.call_id)?;

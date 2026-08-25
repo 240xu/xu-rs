@@ -62,8 +62,11 @@ function renderTabs() {
   }
 }
 
+let panel_owner = 0; // 当前持有面板的渲染序号；防旧 tab 渲染器抢占。
+
 function panel() {
   const c = $("#content");
+  panel_owner = render_seq;
   c.innerHTML = '<div class="loading">加载中…</div>';
   return c;
 }
@@ -78,7 +81,7 @@ async function renderProviders() {
   const seq = ++render_seq;
   const c = panel();
   const res = await api("/api/providers");
-  if (seq !== render_seq) return;
+  if (seq !== render_seq || panel_owner !== seq) return;
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端：' + (res && res.error || "未知错误") + '</div>'; return; }
   const list = res.data || [];
   updateStat("#stat-providers", pad2(list.length));
@@ -174,8 +177,8 @@ async function toggleTarget(kind, id, target, next) {
   const res = await command([kind, next ? "enable" : "disable", id, "--target", target, "--yes"]);
   if (res && res.ok) {
     pending_open = open;
-    kind === "mcp" ? renderMcp() : renderSkills();
-    applyPendingOpen();
+    await (current === "mcp" ? renderMcp() : current === "skills" ? renderSkills() : renderPanel());
+    if (current === "mcp" || current === "skills") applyPendingOpen();
   }
 }
 let pending_open = null;
@@ -199,7 +202,7 @@ async function renderMcp() {
   const seq = ++render_seq;
   const c = panel();
   const res = await api("/api/mcp");
-  if (seq !== render_seq) return;
+  if (seq !== render_seq || panel_owner !== seq) return;
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const list = res.data || [];
   if (!list.length) { c.innerHTML = '<div class="empty">暂无 MCP 服务</div>'; return; }
@@ -247,7 +250,7 @@ async function renderMcp() {
     actions.querySelector("[data-del]").onclick = async () => {
       if (!confirm("删除 MCP " + (m.name || m.id) + "？")) return;
       await command(["mcp","delete", m.id, "--yes"]);
-      renderMcp();
+      current === "mcp" ? renderMcp() : renderPanel();
     };
   }
 
@@ -282,7 +285,11 @@ async function renderMcp() {
       if (urlv && urlv !== (m.url || "")) args.push("--url", urlv);
       args.push("--yes");
       const res = await command(args);
-      if (res && res.ok) renderMcp();
+      if (res && res.ok) {
+        pending_open = collectOpenNames();
+        current === "mcp" ? await renderMcp() : await renderPanel();
+        applyPendingOpen();
+      }
     };
     body.insertBefore(form, actions);
   }
@@ -292,7 +299,7 @@ async function renderSkills() {
   const seq = ++render_seq;
   const c = panel();
   const res = await api("/api/skills");
-  if (seq !== render_seq) return;
+  if (seq !== render_seq || panel_owner !== seq) return;
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const list = res.data || [];
   if (!list.length) { c.innerHTML = '<div class="empty">暂无 Skill</div>'; return; }
@@ -334,7 +341,7 @@ async function renderAgent() {
   const seq = ++render_seq;
   const c = panel();
   const res = await api("/api/overview");
-  if (seq !== render_seq) return;
+  if (seq !== render_seq || panel_owner !== seq) return;
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const d = res.data || {};
   const running = d.runtime && d.runtime.running;
@@ -366,7 +373,7 @@ async function renderUsage() {
   const seq = ++render_seq;
   const c = panel();
   const res = await api("/api/stats");
-  if (seq !== render_seq) return;
+  if (seq !== render_seq || panel_owner !== seq) return;
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const periods = (res.data && res.data.periods) || {};
   const keys = ["24h", "48h", "7d", "30d"];
@@ -416,7 +423,11 @@ function init() {
   });
   $("#stop-btn").onclick = async () => {
     const res = await api("/api/web/stop", { method: "POST" });
-    alert(res && res.ok ? "已切回 TUI，下次启动将直接进入 TUI" : (res && res.error) || "停止失败");
+    if (res && res.ok) {
+      alert(res.warning ? "已停止。注意：" + res.warning : "已切回 TUI，下次启动将直接进入 TUI");
+    } else {
+      alert((res && res.error) || "停止失败");
+    }
   };
   setInterval(() => { if (current === "usage") renderUsage(); }, 10000);
 }

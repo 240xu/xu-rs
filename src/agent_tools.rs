@@ -1506,8 +1506,13 @@ impl InstallLock {
 }
 
 fn process_is_running(pid: u32) -> bool {
-    // 用 libc::kill 而非外部 `kill -0`：procps 实现对超界 pid 的行为不一致
-    // （CI runner 上 4294967295 曾被误判存活，导致 stale 锁清理被跳过）。
+    // 截断守卫：pid_t 是 i32，>i32::MAX 的值会截成负数——
+    //   -1 => kill(-1,0) 广播全部进程恒成功；0 => 探测自身进程组恒成功。
+    // 两类损坏锁文件内容都会让 stale 清理永久跳过，越界一律按 stale 处理。
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // 用 libc::kill 而非外部 `kill -0`：procps 实现对超界 pid 的行为不一致。
     // 语义：0=存在；EPERM=存在但属他人；ESRCH/其它=不存在。
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     rc == 0 || std::io::Error::from_raw_os_error(rc).kind() == std::io::ErrorKind::PermissionDenied
@@ -1557,6 +1562,19 @@ mod tests {
         assert!(lock.exists());
         drop(guard);
         assert!(!lock.exists());
+    }
+
+    #[test]
+    fn truncated_pid_contents_are_treated_as_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        for content in ["4294967295", "0"] {
+            let lock = dir.path().join("xu-install.lock");
+            fs::write(&lock, content).unwrap();
+            let guard = InstallLock::acquire(&lock)
+                .unwrap_or_else(|e| panic!("content {content} must be stale: {e}"));
+            drop(guard);
+            assert!(!lock.exists());
+        }
     }
 
     #[test]

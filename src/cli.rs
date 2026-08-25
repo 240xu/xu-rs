@@ -555,18 +555,18 @@ fn mcp_update(home: &Path, args: &[String]) -> Result<String, String> {
         server.command = Some(command.to_string());
     }
     let replacement_args = flag_values_allow_dash(args, "--arg")?;
-    if !replacement_args.is_empty() || args.iter().any(|arg| arg == "--clear-args") {
+    if !replacement_args.is_empty() || bool_flag_requested(args, "--clear-args") {
         server.args = replacement_args.into_iter().map(str::to_string).collect();
     }
     if let Some(url) = flag_value(args, "--url")? {
         server.url = Some(url.to_string());
     }
     let env = flag_values(args, "--env")?;
-    if !env.is_empty() || args.iter().any(|arg| arg == "--clear-env") {
+    if !env.is_empty() || bool_flag_requested(args, "--clear-env") {
         server.env = parse_pairs(&env, "--env")?;
     }
     let headers = flag_values(args, "--header")?;
-    if !headers.is_empty() || args.iter().any(|arg| arg == "--clear-headers") {
+    if !headers.is_empty() || bool_flag_requested(args, "--clear-headers") {
         server.headers = parse_pairs(&headers, "--header")?;
     }
     if let Some(description) = flag_value(args, "--description")? {
@@ -751,6 +751,15 @@ fn consumed_allow_dash_indices(args: &[String]) -> std::collections::HashSet<usi
         }
     }
     consumed
+}
+
+/// 布尔 flag 判定统一走这里：跳过被 `--arg`（allow-dash 值）消费的 token，
+/// 防 `--arg --clear-env` 这类"值即 flag 形态"的双重命中。
+fn bool_flag_requested(args: &[String], flag: &str) -> bool {
+    let skip = consumed_allow_dash_indices(args);
+    args.iter()
+        .enumerate()
+        .any(|(index, arg)| arg == flag && !skip.contains(&index))
 }
 
 fn yes_requested(args: &[String]) -> bool {
@@ -1630,7 +1639,7 @@ fn provider_update_command(home: &Path, args: &[String]) -> Result<String, Strin
     let max_output_tokens = numeric_flag(args, "--max-output-tokens")?;
     let reasoning_effort = flag_value(args, "--reasoning-effort")?;
     let headers = flag_values(args, "--header")?;
-    let clear_headers = args.iter().any(|arg| arg == "--clear-headers");
+    let clear_headers = bool_flag_requested(args, "--clear-headers");
     let models = flag_values(args, "--model")?;
     let models_json = flag_value(args, "--models-json")?;
     let claude_slots: Vec<(String, String)> = flag_values(args, "--claude-slot")?

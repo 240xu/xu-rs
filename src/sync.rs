@@ -194,7 +194,7 @@ fn collect_files(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == ".git" {
+        if name == ".git" || name == FINGERPRINT_FILE {
             continue;
         }
         let rel = path
@@ -227,7 +227,7 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<(), String> {
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
-        if name == ".git" {
+        if name == ".git" || name == FINGERPRINT_FILE {
             continue;
         }
         let from = entry.path();
