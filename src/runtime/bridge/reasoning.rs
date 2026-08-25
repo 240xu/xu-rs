@@ -319,12 +319,31 @@ fn validate_remote_url(url: &str) -> Result<(), BridgeError> {
             Err(_) => return Ok(()),
         }
     };
-    if addresses.is_empty() || addresses.iter().any(|a| is_local_address(*a)) {
+    if addresses.is_empty() || addresses.iter().any(|a| resolved_ip_is_local(*a)) {
         return Err(BridgeError::Unsupported {
             field: "media.url".to_string(),
         });
     }
     Ok(())
+}
+
+/// 解析结果的判定比字面 IP 宽：198.18.0.0/15 同时是 IANA 基准测试保留段与
+/// Clash/mihomo fake-ip 默认池。在客户端侧校验 URL 时，域名经本机 DNS 落到
+/// 该段属于正常代理上网而非 SSRF；直写该段的字面 IP 仍被 is_local_address 拒绝。
+fn resolved_ip_is_local(address: IpAddr) -> bool {
+    if let IpAddr::V4(v4) = address {
+        if v4.octets()[0] == 198 && (v4.octets()[1] & 0xFE) == 18 {
+            return false;
+        }
+    }
+    if let IpAddr::V6(v6) = address {
+        if let Some(mapped) = v6.to_ipv4_mapped() {
+            if mapped.octets()[0] == 198 && (mapped.octets()[1] & 0xFE) == 18 {
+                return false;
+            }
+        }
+    }
+    is_local_address(address)
 }
 
 fn is_local_hostname(host: &str) -> bool {

@@ -1506,13 +1506,11 @@ impl InstallLock {
 }
 
 fn process_is_running(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    // 用 libc::kill 而非外部 `kill -0`：procps 实现对超界 pid 的行为不一致
+    // （CI runner 上 4294967295 曾被误判存活，导致 stale 锁清理被跳过）。
+    // 语义：0=存在；EPERM=存在但属他人；ESRCH/其它=不存在。
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::from_raw_os_error(rc).kind() == std::io::ErrorKind::PermissionDenied
 }
 
 impl Drop for InstallLock {
@@ -1550,13 +1548,31 @@ mod tests {
     fn removes_stale_install_lock() {
         let dir = tempfile::tempdir().unwrap();
         let lock = dir.path().join("xu-install.lock");
-        fs::write(&lock, "4294967295").unwrap();
+        // 非数字内容解析失败 => 视为 stale（不依赖外部 kill 的平台差异；
+        // 曾用的 4294967295 会经 pid_t 截断成 -1 => kill(-1) 广播恒成功）。
+        fs::write(&lock, "not-a-pid").unwrap();
 
         let guard = InstallLock::acquire(&lock).unwrap();
 
         assert!(lock.exists());
         drop(guard);
         assert!(!lock.exists());
+    }
+
+    #[test]
+    fn install_lock_rejects_when_owner_pid_is_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("xu-install.lock");
+        // 写入当前进程 pid（必然存活）=> 必须拒绝二次获取。
+        fs::write(&lock, std::process::id().to_string()).unwrap();
+
+        let Err(error) = InstallLock::acquire(&lock) else {
+            panic!("alive-owner lock must be rejected");
+        };
+        assert!(
+            error.contains("another spec install may be running"),
+            "{error}"
+        );
     }
 
     #[test]
