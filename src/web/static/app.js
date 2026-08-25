@@ -20,7 +20,15 @@ function log(text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function csrfHeaders(opts) {
+  const method = (opts && opts.method) || "GET";
+  const headers = Object.assign({}, (opts && opts.headers) || {});
+  if (method !== "GET" && window.XCC_CSRF) headers["x-xcc-csrf"] = window.XCC_CSRF;
+  return headers;
+}
+
 async function api(path, opts) {
+  opts = Object.assign({}, opts, { headers: csrfHeaders(opts) });
   const res = await fetch(path, opts);
   let body = null;
   try { body = await res.json(); } catch (_) { body = { ok: false, error: "响应解析失败" }; }

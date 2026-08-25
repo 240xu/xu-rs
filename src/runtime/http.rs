@@ -194,20 +194,22 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-/// 非阻塞排空 socket 中尚未读取的请求字节（限时），避免 drop 时 RST 吞掉已写响应。
-pub(super) fn drain_incoming(stream: &mut std::net::TcpStream, budget: std::time::Duration) {
-    use std::time::Instant;
-    let start = Instant::now();
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(10)));
-    let mut sink = [0u8; 4096];
-    while start.elapsed() < budget {
+/// 非阻塞排空 socket 中尚未读取的请求字节，避免 close 触发 RST 吞掉已写响应。
+/// 关键约束：运行在唯一 accept 循环里，绝不能等待——空闲对端立即 WouldBlock
+/// 返回；已到达内核缓冲的请求字节（典型：客户端已发完在等响应）一次读尽。
+pub(super) fn drain_incoming(stream: &mut std::net::TcpStream) {
+    let _ = stream.set_nonblocking(true);
+    let mut sink = [0u8; 8192];
+    // 上限 MAX_BODY_BYTES：防恶意端无限流式发送拖住 accept 循环。
+    let mut drained = 0usize;
+    while drained <= MAX_BODY_BYTES {
         match stream.read(&mut sink) {
             Ok(0) => break,
-            Ok(_) => continue,
-            Err(_) => break,
+            Ok(n) => drained += n,
+            Err(_) => break, // WouldBlock / 其它错误都立即收手
         }
     }
-    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_nonblocking(false);
 }
 
 pub(super) fn write_json(stream: &mut TcpStream, status: u16, body: Value) -> Result<(), String> {

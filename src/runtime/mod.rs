@@ -460,7 +460,7 @@ pub fn serve(home: &Path) -> Result<(), String> {
                         json!({ "error": { "type": "overloaded", "message": "server busy" } }),
                     );
                     // 排空未读请求字节再关：否则 drop 触发 RST，客户端收不到 503。
-                    drain_incoming(&mut stream, Duration::from_millis(30));
+                    drain_incoming(&mut stream);
                     continue;
                 };
                 std::thread::spawn(move || {
@@ -469,11 +469,19 @@ pub fn serve(home: &Path) -> Result<(), String> {
                     let _slot_guard = _slot_guard;
                     let mut count_guard = ConnectionCountGuard::new(Arc::clone(&stats));
                     count_guard.mark_active();
-                    let result = handle_connection(&mut stream, &home, &profiles, &stats);
-                    match result {
-                        Ok(()) => {
+                    // 三态记账：Ok(true)=成功；Ok(false)=已写出失败响应
+                    // （超时/协议错，不再补写第二响应）；Err=未写响应需补 500。
+                    match handle_connection_accounted(
+                        &mut stream,
+                        &home,
+                        &profiles,
+                        RUNTIME_SOCKET_TIMEOUT,
+                        &stats,
+                    ) {
+                        Ok(true) => {
                             stats.success_count.fetch_add(1, Ordering::SeqCst);
                         }
+                        Ok(false) => {}
                         Err(error) => {
                             stats.failure_count.fetch_add(1, Ordering::SeqCst);
                             let _ = write_json(&mut stream, 500, json!({ "error": error }));
@@ -505,6 +513,7 @@ fn wait_for_drain(stats: &RuntimeStats) {
     }
 }
 
+#[cfg(test)]
 fn handle_connection(
     stream: &mut TcpStream,
     home: &Path,
@@ -514,6 +523,8 @@ fn handle_connection(
     handle_connection_with_timeout(stream, home, providers, RUNTIME_SOCKET_TIMEOUT, stats)
 }
 
+/// 兼容旧直接调用的薄封装：把三态折叠回二值 Result（测试断言 is_ok 用）。
+#[cfg(test)]
 fn handle_connection_with_timeout(
     stream: &mut TcpStream,
     home: &Path,
@@ -521,20 +532,46 @@ fn handle_connection_with_timeout(
     timeout: Duration,
     stats: &RuntimeStats,
 ) -> Result<(), String> {
+    handle_connection_accounted(stream, home, providers, timeout, stats).map(|_accounted| ())
+}
+
+/// 三态连接处理：
+/// - `Ok(true)`：请求成功完成；
+/// - `Ok(false)`：已向客户端写出完整失败响应（超时 504 / 协议错），失败计数
+///   在此计入，外层不得再写第二个响应；
+/// - `Err(_)`：未能写出响应，外层补 500 并计失败。
+fn handle_connection_accounted(
+    stream: &mut TcpStream,
+    home: &Path,
+    providers: &[ProviderProfile],
+    timeout: Duration,
+    stats: &RuntimeStats,
+) -> Result<bool, String> {
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
-        let _ = write_bridge_error(stream, bridge::BridgeError::Internal);
-        return Err(format!("set read timeout: {error}"));
+        let written = write_bridge_error(stream, bridge::BridgeError::Internal);
+        stats.failure_count.fetch_add(1, Ordering::SeqCst);
+        return if written.is_ok() {
+            Ok(false)
+        } else {
+            Err(format!("set read timeout: {error}"))
+        };
     }
     if let Err(error) = stream.set_write_timeout(Some(timeout)) {
-        let _ = write_bridge_error(stream, bridge::BridgeError::Internal);
-        return Err(format!("set write timeout: {error}"));
+        let written = write_bridge_error(stream, bridge::BridgeError::Internal);
+        stats.failure_count.fetch_add(1, Ordering::SeqCst);
+        return if written.is_ok() {
+            Ok(false)
+        } else {
+            Err(format!("set write timeout: {error}"))
+        };
     }
     let request = match read_http_request(stream) {
         Ok(request) => request,
         Err(error) if is_socket_read_timeout(&error) => {
             write_bridge_error(stream, bridge::BridgeError::Timeout)?;
-            // 504 信封已写出：返回 Ok 防止外层再补写第二个响应（双响应 P1）。
-            return Ok(());
+            // 504 信封已写出：计失败并返回 Ok(false)，防止外层再补写第二响应。
+            stats.failure_count.fetch_add(1, Ordering::SeqCst);
+            return Ok(false);
         }
         Err(error) => {
             let error = if error.contains("too large") {
@@ -542,10 +579,17 @@ fn handle_connection_with_timeout(
             } else {
                 bridge::BridgeError::InvalidRequest
             };
-            return write_bridge_error(stream, error);
+            stats.failure_count.fetch_add(1, Ordering::SeqCst);
+            return match write_bridge_error(stream, error) {
+                Ok(()) => Ok(false),
+                Err(write_error) => Err(write_error),
+            };
         }
     };
-    handle_request(stream, home, &request, providers, stats)
+    match handle_request(stream, home, &request, providers, stats) {
+        Ok(()) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 fn is_socket_read_timeout(error: &str) -> bool {
@@ -4561,6 +4605,32 @@ mod tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("queued acquire() must succeed once the slot is released");
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn timeout_counts_as_failure_not_success() {
+        let providers = vec![provider("test", ProtocolKind::OpenAiChat)];
+        let home = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stats_arc = std::sync::Arc::new(RuntimeStats::new());
+        let stats_for_thread = std::sync::Arc::clone(&stats_arc);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            handle_connection_accounted(
+                &mut stream,
+                home.path(),
+                &providers,
+                Duration::from_millis(200),
+                &stats_for_thread,
+            )
+        });
+        let _client = TcpStream::connect(address).unwrap();
+        let outcome = server.join().unwrap();
+        // 超时已写出 504：不算成功，也不允许外层再写 500。
+        assert!(matches!(outcome, Ok(false)), "got: {outcome:?}");
+        assert_eq!(stats_arc.failure_count.load(Ordering::SeqCst), 1);
+        assert_eq!(stats_arc.success_count.load(Ordering::SeqCst), 0);
     }
 
     #[test]

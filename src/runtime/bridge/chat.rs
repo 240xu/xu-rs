@@ -252,7 +252,7 @@ fn parse_tools(value: Option<&Value>) -> Result<Vec<ToolDefinitionIr>, BridgeErr
     let Some(value) = value else {
         return Ok(Vec::new());
     };
-    value
+    let tools: Vec<ToolDefinitionIr> = value
         .as_array()
         .ok_or(BridgeError::InvalidRequest)?
         .iter()
@@ -282,7 +282,15 @@ fn parse_tools(value: Option<&Value>) -> Result<Vec<ToolDefinitionIr>, BridgeErr
                 parameters,
             ))
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // 同名工具让 strict 按名回填与上游 tool_choice 寻址产生歧义——解析期 fail-closed。
+    let mut seen = std::collections::BTreeSet::new();
+    for tool in &tools {
+        if !seen.insert(tool.name.as_str()) {
+            return Err(BridgeError::InvalidRequest);
+        }
+    }
+    Ok(tools)
 }
 
 fn parse_tool_choice(value: Option<&Value>) -> Result<Option<ToolChoiceIr>, BridgeError> {
@@ -1573,6 +1581,24 @@ mod tests {
         ));
         assert_eq!(ir.generation.max_tokens, Some(77));
         assert_eq!(ir.tool_choice, Some(super::super::ToolChoiceIr::Any));
+    }
+
+    #[test]
+    fn duplicate_tool_names_are_rejected() {
+        // 同名工具让 strict 按名回填产生歧义（后值覆盖前值）——解析期 fail-closed。
+        let body = json!({
+            "model": "chat-fixture-model",
+            "messages": [{"role": "user", "content": "fixture"}],
+            "tools": [
+                {"type": "function", "function": {"name": "apply_patch", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "apply_patch", "parameters": {"type": "object"}}}
+            ]
+        });
+        let error = super::parse_request(&body).expect_err("duplicate tool names must be rejected");
+        assert!(
+            matches!(error, super::BridgeError::InvalidRequest),
+            "got: {error:?}"
+        );
     }
 
     #[test]

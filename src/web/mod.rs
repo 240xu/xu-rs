@@ -44,12 +44,45 @@ pub fn serve(port: u16, stop_flag: Arc<AtomicBool>) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("configure {listen}: {error}"))?;
-    serve_listener(listener, stop_flag)
+    let csrf = generate_csrf_token();
+    serve_listener_with_csrf(listener, stop_flag, csrf)
 }
 
-fn serve_listener(listener: TcpListener, stop_flag: Arc<AtomicBool>) -> Result<(), String> {
+/// 每次服务启动生成一次性 CSRF token：只注入本服务返回的页面，
+/// 跨站页面读不到它，因此无法伪造写请求头。
+fn generate_csrf_token() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    match std::fs::File::open("/dev/urandom") {
+        Ok(mut file) => {
+            let _ = file.read_exact(&mut bytes);
+        }
+        Err(_) => {
+            // 兜底熵（urandom 缺失极罕见）：pid + 纳秒时钟混合。
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let mut value = nanos ^ ((std::process::id() as u64) << 32);
+            for byte in bytes.iter_mut() {
+                value = value
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                *byte = (value >> 33) as u8;
+            }
+        }
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn serve_listener_with_csrf(
+    listener: TcpListener,
+    stop_flag: Arc<AtomicBool>,
+    csrf: String,
+) -> Result<(), String> {
     let _ = listener.set_nonblocking(true);
     let home = crate::config::home();
+    let csrf = Arc::new(csrf);
     loop {
         if stop_flag.load(Ordering::SeqCst) {
             break;
@@ -58,8 +91,9 @@ fn serve_listener(listener: TcpListener, stop_flag: Arc<AtomicBool>) -> Result<(
             Ok((mut stream, _)) => {
                 let home = home.clone();
                 let flag = Arc::clone(&stop_flag);
+                let csrf = Arc::clone(&csrf);
                 std::thread::spawn(move || {
-                    let _ = handle_connection(&mut stream, &home, &flag);
+                    let _ = handle_connection(&mut stream, &home, &flag, &csrf);
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -77,6 +111,7 @@ fn handle_connection(
     stream: &mut TcpStream,
     home: &Path,
     stop_flag: &Arc<AtomicBool>,
+    csrf: &str,
 ) -> Result<(), String> {
     let _ = stream.set_read_timeout(Some(SOCKET_TIMEOUT));
     let _ = stream.set_write_timeout(Some(SOCKET_TIMEOUT));
@@ -87,10 +122,15 @@ fn handle_connection(
             return Err(error);
         }
     };
-    let response = route(home, &request);
+    let response = route(home, &request, csrf);
     match response {
         RouteResponse::Json { status, value } => write_json(stream, (status, value)),
         RouteResponse::Text {
+            status,
+            content_type,
+            body,
+        } => write_text(stream, status, content_type, body.as_bytes()),
+        RouteResponse::OwnedText {
             status,
             content_type,
             body,
@@ -109,6 +149,29 @@ struct Request {
     path: String,
     body: Vec<u8>,
     host: Option<String>,
+    csrf: Option<String>,
+    origin: Option<String>,
+}
+
+/// 写操作三重防线：
+/// 1. Host 必须是回环（挡 DNS rebinding）；
+/// 2. CSRF token 必须匹配（跨站页面读不到我们注入页面的 token）；
+/// 3. 显式 Origin 若存在必须是本地形态（纵深防御）。
+fn mutation_allowed(request: &Request, expected_csrf: &str) -> bool {
+    if !host_is_local(request) {
+        return false;
+    }
+    if request.csrf.as_deref() != Some(expected_csrf) {
+        return false;
+    }
+    match request.origin.as_deref() {
+        None => true,
+        Some(origin) => {
+            origin.starts_with("http://127.0.0.1")
+                || origin.starts_with("http://localhost")
+                || origin.starts_with("http://[::1]")
+        }
+    }
 }
 
 /// 写操作 CSRF/DNS-rebinding 防线：浏览器发起的跨站 simple request 无法伪造
@@ -157,12 +220,18 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
 
     let mut content_length = 0;
     let mut host: Option<String> = None;
+    let mut csrf: Option<String> = None;
+    let mut origin: Option<String> = None;
     for line in lines {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
         if key.eq_ignore_ascii_case("host") {
             host = Some(value.trim().to_ascii_lowercase());
+        } else if key.eq_ignore_ascii_case("x-xcc-csrf") {
+            csrf = Some(value.trim().to_string());
+        } else if key.eq_ignore_ascii_case("origin") {
+            origin = Some(value.trim().to_ascii_lowercase());
         } else if key.eq_ignore_ascii_case("content-length") {
             content_length = value.trim().parse::<usize>().unwrap_or(0);
         }
@@ -187,6 +256,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         path: path.to_string(),
         body,
         host,
+        csrf,
+        origin,
     })
 }
 
@@ -206,21 +277,36 @@ enum RouteResponse {
         content_type: &'static str,
         body: &'static str,
     },
+    OwnedText {
+        status: u16,
+        content_type: &'static str,
+        body: String,
+    },
 }
 
 /// Route dispatch. Static files and `/api/*` JSON handlers; everything else
 /// falls through to a 404 error envelope.
-fn route(home: &Path, request: &Request) -> RouteResponse {
+const CSRF_PLACEHOLDER: &str = "<script src=\"/static/app.js\"></script>";
+
+/// 把 token 以内联全局变量形式注入首页：app.js 从 window.XCC_CSRF 读取。
+fn index_with_csrf(csrf: &str) -> String {
+    INDEX_HTML.replace(
+        CSRF_PLACEHOLDER,
+        &format!("<script>window.XCC_CSRF={csrf:?};</script>{CSRF_PLACEHOLDER}"),
+    )
+}
+
+fn route(home: &Path, request: &Request, expected_csrf: &str) -> RouteResponse {
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/") => RouteResponse::Text {
+        ("GET", "/") => RouteResponse::OwnedText {
             status: 200,
             content_type: "text/html",
-            body: INDEX_HTML,
+            body: index_with_csrf(expected_csrf),
         },
-        ("GET", "/static/index.html") => RouteResponse::Text {
+        ("GET", "/static/index.html") => RouteResponse::OwnedText {
             status: 200,
             content_type: "text/html",
-            body: INDEX_HTML,
+            body: index_with_csrf(expected_csrf),
         },
         ("GET", "/static/app.js") => RouteResponse::Text {
             status: 200,
@@ -234,7 +320,7 @@ fn route(home: &Path, request: &Request) -> RouteResponse {
         },
         ("GET", "/api/overview") => json_route(api::overview(home)),
         ("GET", "/api/providers") => json_route(api::providers(home)),
-        ("POST", "/api/command") if !host_is_local(request) => json_route((
+        ("POST", "/api/command") if !mutation_allowed(request, expected_csrf) => json_route((
             403,
             serde_json::json!({ "ok": false, "error": "cross-origin command rejected" }),
         )),
@@ -243,7 +329,7 @@ fn route(home: &Path, request: &Request) -> RouteResponse {
         ("GET", "/api/skills") => json_route(api::skills_list(home)),
         ("GET", "/api/stats") => json_route(api::stats(home)),
         ("GET", "/api/sessions") => json_route(api::sessions()),
-        ("POST", "/api/web/stop") if !host_is_local(request) => json_route((
+        ("POST", "/api/web/stop") if !mutation_allowed(request, expected_csrf) => json_route((
             403,
             serde_json::json!({ "ok": false, "error": "cross-origin request rejected" }),
         )),
@@ -266,6 +352,7 @@ fn status_text(status: u16) -> &'static str {
     match status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         500 => "Internal Server Error",
         _ => "OK",
@@ -329,20 +416,23 @@ mod tests {
     /// extracting the address).
     fn spawn_server() -> (
         u16,
+        String,
         Arc<AtomicBool>,
         thread::JoinHandle<()>,
         mpsc::Receiver<()>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let csrf = generate_csrf_token();
         let flag = Arc::new(AtomicBool::new(false));
         let server_flag = Arc::clone(&flag);
+        let csrf_for_server = csrf.clone();
         let (done_tx, done_rx) = mpsc::channel();
         let handle = thread::spawn(move || {
-            let _ = serve_listener(listener, server_flag);
+            let _ = serve_listener_with_csrf(listener, server_flag, csrf_for_server);
             let _ = done_tx.send(());
         });
-        (port, flag, handle, done_rx)
+        (port, csrf, flag, handle, done_rx)
     }
 
     fn get(port: u16, path: &str) -> reqwest::blocking::Response {
@@ -352,9 +442,129 @@ mod tests {
             .unwrap()
     }
 
+    /// 原始 socket 请求：返回完整响应文本（含状态行），用于断言 wire 形态。
+    fn raw_request(port: u16, request: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut buf = Vec::new();
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let _ = stream.read_to_end(&mut buf);
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[test]
+    fn mutation_without_csrf_token_is_rejected() {
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
+
+        // 合法 loopback Host，但缺 token：跨站 simple request 的真实形态。
+        let response = client()
+            .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("Content-Type", "text/plain")
+            .body(r#"{"args":["help"]}"#)
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 403, "missing token must be rejected");
+
+        flag.store(true, Ordering::SeqCst);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn mutation_with_wrong_token_or_foreign_origin_is_rejected() {
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
+
+        let wrong = client()
+            .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("x-xcc-csrf", "deadbeef")
+            .json(&json!({ "args": ["help"] }))
+            .send()
+            .unwrap();
+        assert_eq!(wrong.status(), 403, "wrong token must be rejected");
+
+        // 拿到真 token 也救不了外来 Origin（纵深防御）。
+        let (_port2, _csrf2, flag2, handle2, done2) = spawn_server();
+        let response = client()
+            .post(format!("http://127.0.0.1:{port}/api/web/stop"))
+            .header("Origin", "https://evil.example")
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 403, "foreign Origin must be rejected");
+        drop(response);
+        flag2.store(true, Ordering::SeqCst);
+        let _ = done2.recv_timeout(Duration::from_secs(1));
+        handle2.join().unwrap();
+
+        flag.store(true, Ordering::SeqCst);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn mutation_with_valid_csrf_token_succeeds() {
+        let (port, csrf, flag, handle, done_rx) = spawn_server();
+
+        let response = client()
+            .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("x-xcc-csrf", &csrf)
+            .json(&json!({ "args": ["help"] }))
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let value: Value = serde_json::from_str(&response.text().unwrap()).unwrap();
+        assert_eq!(value["ok"], true);
+
+        flag.store(true, Ordering::SeqCst);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn index_embeds_csrf_token_and_app_sends_header() {
+        let (port, _csrf, _flag, handle, done_rx) = spawn_server();
+
+        let html = get(port, "/").text().unwrap();
+        assert!(
+            html.contains("window.XCC_CSRF"),
+            "served HTML must define window.XCC_CSRF, got: {html}"
+        );
+        assert!(
+            !html.contains("__XCC_CSRF_TOKEN__"),
+            "placeholder must be replaced, not shipped verbatim"
+        );
+        let js = get(port, "/static/app.js").text().unwrap();
+        assert!(
+            js.contains("x-xcc-csrf"),
+            "app.js must send the csrf header on mutations"
+        );
+
+        _flag.store(true, Ordering::SeqCst);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn rejected_mutation_status_line_is_forbidden() {
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
+
+        let body = raw_request(
+            port,
+            "POST /api/web/stop HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n",
+        );
+        assert!(
+            body.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "raw status line must read 'HTTP/1.1 403 Forbidden', got: {body}"
+        );
+
+        flag.store(true, Ordering::SeqCst);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        handle.join().unwrap();
+    }
+
     #[test]
     fn route_parsing() {
-        let (port, flag, handle, done_rx) = spawn_server();
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
 
         let html = get(port, "/").text().unwrap();
         assert!(
@@ -434,7 +644,7 @@ mod tests {
 
     #[test]
     fn api_overview_shape() {
-        let (port, flag, handle, done_rx) = spawn_server();
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
 
         let response = get(port, "/api/overview");
         let value: Value = serde_json::from_str(&response.text().unwrap()).unwrap();
@@ -455,10 +665,11 @@ mod tests {
 
     #[test]
     fn api_command_passthrough() {
-        let (port, flag, handle, done_rx) = spawn_server();
+        let (port, csrf, flag, handle, done_rx) = spawn_server();
 
         let response = client()
             .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("x-xcc-csrf", &csrf)
             .json(&json!({ "args": ["help"] }))
             .send()
             .unwrap();
@@ -471,6 +682,7 @@ mod tests {
 
         let response = client()
             .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("x-xcc-csrf", &csrf)
             .json(&json!({ "args": ["no-such-command"] }))
             .send()
             .unwrap();
@@ -480,6 +692,7 @@ mod tests {
 
         let response = client()
             .post(format!("http://127.0.0.1:{port}/api/command"))
+            .header("x-xcc-csrf", &csrf)
             .json(&json!({ "nope": true }))
             .send()
             .unwrap();
@@ -493,7 +706,7 @@ mod tests {
 
     #[test]
     fn api_stats_shape() {
-        let (port, flag, handle, done_rx) = spawn_server();
+        let (port, _csrf, flag, handle, done_rx) = spawn_server();
 
         let response = get(port, "/api/stats");
         assert_eq!(response.status(), 200);
@@ -511,10 +724,11 @@ mod tests {
 
     #[test]
     fn api_web_stop_tui_mode() {
-        let (port, _flag, handle, done_rx) = spawn_server();
+        let (port, csrf, _flag, handle, done_rx) = spawn_server();
 
         let response = client()
             .post(format!("http://127.0.0.1:{port}/api/web/stop"))
+            .header("x-xcc-csrf", &csrf)
             .send()
             .unwrap();
         let value: Value = serde_json::from_str(&response.text().unwrap()).unwrap();
