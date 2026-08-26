@@ -1236,11 +1236,6 @@ fn main() {
         }
 
         if let tui::AppEvent::Key(k) = &ev {
-            if k.code == KeyCode::Char('?') {
-                mode = Mode::Help;
-                need_redraw = true;
-                continue;
-            }
             // W：Web 控制台起/停（仅顶层页；搜索框/表单输入不劫持，会话页自有循环）。
             let top_page = matches!(
                 mode,
@@ -1309,6 +1304,11 @@ fn main() {
         if let tui::AppEvent::Key(k) = &ev {
             if k.code == KeyCode::Char('q') && !text_input_focused {
                 mode = Mode::Quit;
+                need_redraw = true;
+                continue;
+            }
+            if k.code == KeyCode::Char('?') && !text_input_focused {
+                mode = Mode::Help;
                 need_redraw = true;
                 continue;
             }

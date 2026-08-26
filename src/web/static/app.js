@@ -370,7 +370,7 @@ async function renderAgent() {
     const card = document.createElement("div");
     card.className = "card";
     const st = a.ready ? '<span class="state ok"><span class="glyph">●</span>就绪</span>' : '<span class="state warn"><span class="glyph">○</span>未就绪</span>';
-    card.innerHTML = '<div class="card-title">' + (a.name || "-") + " " + st +
+    card.innerHTML = '<div class="card-title">' + escapeHtml(a.name || "-") + " " + st +
       '<span class="muted" style="margin-left:auto">当前 ' + escapeHtml(a.current_version || "未安装") +
       (a.latest_version ? " · 最新 " + escapeHtml(a.latest_version) : "") + "</span></div>";
     c.appendChild(card);

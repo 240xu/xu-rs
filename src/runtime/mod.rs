@@ -286,10 +286,13 @@ extern "C" fn shutdown_signal_handler(_signal: libc::c_int) {
 }
 
 fn install_shutdown_handlers() {
-    let handler = shutdown_signal_handler as *const () as libc::sighandler_t;
     unsafe {
-        libc::signal(libc::SIGTERM, handler);
-        libc::signal(libc::SIGINT, handler);
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = shutdown_signal_handler as *const () as usize;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+        libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
     }
 }
 
