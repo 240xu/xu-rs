@@ -53,26 +53,42 @@ pub fn serve(port: u16, stop_flag: Arc<AtomicBool>) -> Result<(), String> {
 fn generate_csrf_token() -> String {
     use std::io::Read;
     let mut bytes = [0u8; 16];
-    match std::fs::File::open("/dev/urandom") {
-        Ok(mut file) => {
-            let _ = file.read_exact(&mut bytes);
-        }
-        Err(_) => {
-            // 兜底熵（urandom 缺失极罕见）：pid + 纳秒时钟混合。
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            let mut value = nanos ^ ((std::process::id() as u64) << 32);
-            for byte in bytes.iter_mut() {
-                value = value
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                *byte = (value >> 33) as u8;
+    // urandom 短读重试（read_exact 出错后缓冲内容未定义，必须整段重来）。
+    for _ in 0..3 {
+        if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
+            if file.read_exact(&mut bytes).is_ok() {
+                return hex_token(&bytes);
             }
         }
     }
+    // 兜底熵：时间×pid×栈地址多轮 splitmix64 扩散（仍远弱于内核熵，
+    // 但 urandom 缺失本身即异常环境）。
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let stack_probe = &bytes as *const _ as u64;
+    let mut value = nanos ^ (std::process::id() as u64).rotate_left(32) ^ stack_probe;
+    for byte in bytes.iter_mut() {
+        value ^= value >> 33;
+        value = value.wrapping_mul(0xff51afd7ed558ccd);
+        value ^= value >> 29;
+        *byte = (value >> 24) as u8;
+    }
+    hex_token(&bytes)
+}
+
+fn hex_token(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 常数时间比较：防逐字节早退时序侧信道（本地攻击面，纵深防御项）。
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let (a, b) = (left.as_bytes(), right.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn serve_listener_with_csrf(
@@ -92,9 +108,15 @@ fn serve_listener_with_csrf(
                 let home = home.clone();
                 let flag = Arc::clone(&stop_flag);
                 let csrf = Arc::clone(&csrf);
-                std::thread::spawn(move || {
-                    let _ = handle_connection(&mut stream, &home, &flag, &csrf);
-                });
+                // spawn 在 EAGAIN 时会 panic——守护循环必须吞掉并继续服务。
+                let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    std::thread::spawn(move || {
+                        let _ = handle_connection(&mut stream, &home, &flag, &csrf);
+                    });
+                }));
+                if spawned.is_err() {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -161,17 +183,30 @@ fn mutation_allowed(request: &Request, expected_csrf: &str) -> bool {
     if !host_is_local(request) {
         return false;
     }
-    if request.csrf.as_deref() != Some(expected_csrf) {
+    if !request
+        .csrf
+        .as_deref()
+        .map(|token| constant_time_eq(token, expected_csrf))
+        .unwrap_or(false)
+    {
         return false;
     }
-    match request.origin.as_deref() {
-        None => true,
-        Some(origin) => {
-            origin.starts_with("http://127.0.0.1")
-                || origin.starts_with("http://localhost")
-                || origin.starts_with("http://[::1]")
-        }
-    }
+    request.origin.as_deref().is_none_or(origin_is_local)
+}
+
+/// Origin 按 Fetch 规范是 `scheme://host[:port]` 整体序列化——host 必须精确
+/// 等值（`http://127.0.0.1.evil.com` 的 host 是 `127.0.0.1.evil.com`，不匹配）。
+fn origin_is_local(origin: &str) -> bool {
+    let Some(host) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "[::1]:0")
+        || host.starts_with("127.0.0.1:")
+        || host.starts_with("localhost:")
+        || host.starts_with("[::1]:")
 }
 
 /// 写操作 CSRF/DNS-rebinding 防线：浏览器发起的跨站 simple request 无法伪造
@@ -183,7 +218,7 @@ fn host_is_local(request: &Request) -> bool {
             || host == "localhost"
             || host.starts_with("localhost:")
             || host == "[::1]"
-            || host == "[::1]:"
+            || host.starts_with("[::1]:")
     })
 }
 
@@ -219,20 +254,34 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         .map_or(raw_target, |(path, _)| path);
 
     let mut content_length = 0;
+    let mut seen_content_length = false;
     let mut host: Option<String> = None;
+    let mut seen_host = false;
     let mut csrf: Option<String> = None;
     let mut origin: Option<String> = None;
+    // 加固与 runtime/http.rs 对齐（RFC 9112 §6.1/§6.3）：TE 与 CL 并存、
+    // 重复 Content-Length 都是双解析歧义源——fail-closed 拒绝。
     for line in lines {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        if key.eq_ignore_ascii_case("host") {
+        if key.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("transfer encoding is not supported; send content-length".to_string());
+        } else if key.eq_ignore_ascii_case("host") {
+            if seen_host {
+                return Err("conflicting duplicate host headers".to_string());
+            }
+            seen_host = true;
             host = Some(value.trim().to_ascii_lowercase());
         } else if key.eq_ignore_ascii_case("x-xcc-csrf") {
             csrf = Some(value.trim().to_string());
         } else if key.eq_ignore_ascii_case("origin") {
             origin = Some(value.trim().to_ascii_lowercase());
         } else if key.eq_ignore_ascii_case("content-length") {
+            if seen_content_length {
+                return Err("conflicting duplicate content-length headers".to_string());
+            }
+            seen_content_length = true;
             content_length = value.trim().parse::<usize>().unwrap_or(0);
         }
     }
@@ -366,8 +415,9 @@ fn write_text(
     body: &[u8],
 ) -> Result<(), String> {
     let headers = format!(
-        "HTTP/1.1 {status} {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\ndate: {}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n",
         status_text(status),
+        http_date(),
         body.len()
     );
     stream
@@ -379,14 +429,22 @@ fn write_text(
 fn write_json(stream: &mut TcpStream, (status, value): (u16, Value)) -> Result<(), String> {
     let body = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
     let headers = format!(
-        "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\ndate: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n",
         status_text(status),
+        http_date(),
         body.len()
     );
     stream
         .write_all(headers.as_bytes())
         .and_then(|_| stream.write_all(&body))
         .map_err(|e| e.to_string())
+}
+
+/// RFC 9110 §6.6.1 要求源站响应带 Date（有时钟者 MUST）。
+fn http_date() -> String {
+    chrono::Utc::now()
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
 }
 
 fn write_error(stream: &mut TcpStream, status: u16, message: &str) -> Result<(), String> {

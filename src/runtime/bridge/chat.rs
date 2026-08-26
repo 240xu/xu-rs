@@ -287,7 +287,9 @@ fn parse_tools(value: Option<&Value>) -> Result<Vec<ToolDefinitionIr>, BridgeErr
     let mut seen = std::collections::BTreeSet::new();
     for tool in &tools {
         if !seen.insert(tool.name.as_str()) {
-            return Err(BridgeError::InvalidRequest);
+            return Err(BridgeError::Unsupported {
+                field: "tools.duplicate_name".to_string(),
+            });
         }
     }
     Ok(tools)
@@ -1584,6 +1586,32 @@ mod tests {
     }
 
     #[test]
+    fn cross_protocol_ir_with_duplicate_tools_is_rejected_at_shared_layer() {
+        // [C1] anthropic/responses 入口放进来的重名工具，转 chat 上游时
+        // 必须在共享校验层被拒（chat::parse_tools 之外的第二道闸）。
+        let ir = super::super::ir::RequestIr {
+            protocol: super::super::WireProtocol::AnthropicMessages,
+            model: "fixture-model".to_string(),
+            metadata: None,
+            messages: Vec::new(),
+            tools: vec![
+                super::tool_definition("read_file".to_string(), None, json!({"type": "object"})),
+                super::tool_definition("read_file".to_string(), None, json!({"type": "object"})),
+            ],
+            tool_choice: None,
+            generation: Default::default(),
+            stream: false,
+            extensions: Default::default(),
+        };
+        let error = super::encode_request(&ir, "chat-upstream")
+            .expect_err("duplicate tools must fail shared validation");
+        assert!(
+            matches!(&error, super::BridgeError::Unsupported { field } if field == "tools.duplicate_name"),
+            "got: {error:?}"
+        );
+    }
+
+    #[test]
     fn duplicate_tool_names_are_rejected() {
         // 同名工具让 strict 按名回填产生歧义（后值覆盖前值）——解析期 fail-closed。
         let body = json!({
@@ -1596,7 +1624,7 @@ mod tests {
         });
         let error = super::parse_request(&body).expect_err("duplicate tool names must be rejected");
         assert!(
-            matches!(error, super::BridgeError::InvalidRequest),
+            matches!(&error, super::BridgeError::Unsupported { field } if field == "tools.duplicate_name"),
             "got: {error:?}"
         );
     }

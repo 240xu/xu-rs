@@ -212,6 +212,13 @@ pub(super) fn drain_incoming(stream: &mut std::net::TcpStream) {
     let _ = stream.set_nonblocking(false);
 }
 
+/// RFC 9110 §6.6.1：源站响应 MUST 带 Date。
+pub(super) fn http_date() -> String {
+    chrono::Utc::now()
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
+}
+
 pub(super) fn write_json(stream: &mut TcpStream, status: u16, body: Value) -> Result<(), String> {
     let status_text = match status {
         200 => "OK",
@@ -225,7 +232,8 @@ pub(super) fn write_json(stream: &mut TcpStream, status: u16, body: Value) -> Re
     };
     let body = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
     let headers = format!(
-        "HTTP/1.1 {status} {status_text}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {status_text}\r\ndate: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        http_date(),
         body.len()
     );
     stream
@@ -272,7 +280,8 @@ pub(super) fn write_raw_headers(
     content_type: &str,
 ) -> Result<(), String> {
     let headers = format!(
-        "HTTP/1.1 {status} {status_text}\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n"
+        "HTTP/1.1 {status} {status_text}\r\ndate: {}\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n",
+        http_date()
     );
     stream
         .write_all(headers.as_bytes())

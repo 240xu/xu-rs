@@ -441,7 +441,7 @@ function init() {
 }
 function renderPanel() {
   const handlers = { providers: renderProviders, mcp: renderMcp, skills: renderSkills, agent: renderAgent, usage: renderUsage };
-  handlers[current]();
+  return handlers[current]();
 }
 
 window.addEventListener("DOMContentLoaded", init);

@@ -228,6 +228,10 @@ struct RuntimeStats {
     pending_connections: AtomicUsize,
     success_count: AtomicU64,
     failure_count: AtomicU64,
+    /// 过载 503 拒绝数（服务自身饱和可见性，不进成败口径）。
+    rejected_overload: AtomicU64,
+    /// /health 探测数（单独计数，防自 poll 稀释成功率）。
+    health_probes: AtomicU64,
 }
 
 impl RuntimeStats {
@@ -238,6 +242,8 @@ impl RuntimeStats {
             pending_connections: AtomicUsize::new(0),
             success_count: AtomicU64::new(0),
             failure_count: AtomicU64::new(0),
+            rejected_overload: AtomicU64::new(0),
+            health_probes: AtomicU64::new(0),
         }
     }
 }
@@ -454,40 +460,49 @@ pub fn serve(home: &Path) -> Result<(), String> {
                 let slots = Arc::clone(&slots);
                 let stats = Arc::clone(&stats);
                 let Some(_slot_guard) = slots.try_acquire() else {
+                    // 过载拒绝单独计数：成功率指标必须可见服务自身的饱和事件。
+                    stats.rejected_overload.fetch_add(1, Ordering::SeqCst);
+                    // accept 循环内联写必须限时：对端不读会无限阻塞唯一循环。
+                    let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
                     let _ = write_json(
                         &mut stream,
                         503,
                         json!({ "error": { "type": "overloaded", "message": "server busy" } }),
                     );
-                    // 排空未读请求字节再关：否则 drop 触发 RST，客户端收不到 503。
+                    // 排空已到达内核缓冲的请求字节再关（非阻塞）：否则 close 触发 RST 吞掉 503。
                     drain_incoming(&mut stream);
                     continue;
                 };
-                std::thread::spawn(move || {
-                    // guard 必须随线程持有（OwnedSlotGuard）：留在 accept 作用域
-                    // 会提前 release，并发上限形同虚设（P0 教训）。
-                    let _slot_guard = _slot_guard;
-                    let mut count_guard = ConnectionCountGuard::new(Arc::clone(&stats));
-                    count_guard.mark_active();
-                    // 三态记账：Ok(true)=成功；Ok(false)=已写出失败响应
-                    // （超时/协议错，不再补写第二响应）；Err=未写响应需补 500。
-                    match handle_connection_accounted(
-                        &mut stream,
-                        &home,
-                        &profiles,
-                        RUNTIME_SOCKET_TIMEOUT,
-                        &stats,
-                    ) {
-                        Ok(true) => {
-                            stats.success_count.fetch_add(1, Ordering::SeqCst);
+                // spawn 在 EAGAIN 时 panic——守护循环吞掉后继续 accept。
+                let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    std::thread::spawn(move || {
+                        // guard 必须随线程持有（OwnedSlotGuard）：留在 accept 作用域
+                        // 会提前 release，并发上限形同虚设（P0 教训）。
+                        let _slot_guard = _slot_guard;
+                        let mut count_guard = ConnectionCountGuard::new(Arc::clone(&stats));
+                        count_guard.mark_active();
+                        // 记账契约见 HandleOutcome：Err 是 failure_count 唯一自增点。
+                        match handle_connection_accounted(
+                            &mut stream,
+                            &home,
+                            &profiles,
+                            RUNTIME_SOCKET_TIMEOUT,
+                            &stats,
+                        ) {
+                            Ok(HandleOutcome::CountSuccess) => {
+                                stats.success_count.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Ok(HandleOutcome::AlreadyCounted) => {}
+                            Err(error) => {
+                                stats.failure_count.fetch_add(1, Ordering::SeqCst);
+                                let _ = write_json(&mut stream, 500, json!({ "error": error }));
+                            }
                         }
-                        Ok(false) => {}
-                        Err(error) => {
-                            stats.failure_count.fetch_add(1, Ordering::SeqCst);
-                            let _ = write_json(&mut stream, 500, json!({ "error": error }));
-                        }
-                    }
-                });
+                    });
+                }));
+                if spawned.is_err() {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(200));
@@ -535,43 +550,49 @@ fn handle_connection_with_timeout(
     handle_connection_accounted(stream, home, providers, timeout, stats).map(|_accounted| ())
 }
 
-/// 三态连接处理：
-/// - `Ok(true)`：请求成功完成；
-/// - `Ok(false)`：已向客户端写出完整失败响应（超时 504 / 协议错），失败计数
-///   在此计入，外层不得再写第二个响应；
-/// - `Err(_)`：未能写出响应，外层补 500 并计失败。
+/// 记账结果：`CountSuccess`=计成功；`AlreadyCounted`=计数已在内部完成
+/// （失败响应/健康探测/过载拒绝），外层不得重复计数；`Err`=`未写出响应，
+/// 外层补 500 并计失败（全链路仅此外层一处自增）。
+#[derive(Debug, PartialEq)]
+enum HandleOutcome {
+    CountSuccess,
+    AlreadyCounted,
+}
+
 fn handle_connection_accounted(
     stream: &mut TcpStream,
     home: &Path,
     providers: &[ProviderProfile],
     timeout: Duration,
     stats: &RuntimeStats,
-) -> Result<bool, String> {
+) -> Result<HandleOutcome, String> {
+    // 健康探测单独计数：health_check/is_running/外部监控的自 poll 不进
+    // success_count，防止 /health 自报的成功率被探测流量稀释。
     if let Err(error) = stream.set_read_timeout(Some(timeout)) {
-        let written = write_bridge_error(stream, bridge::BridgeError::Internal);
-        stats.failure_count.fetch_add(1, Ordering::SeqCst);
-        return if written.is_ok() {
-            Ok(false)
-        } else {
-            Err(format!("set read timeout: {error}"))
+        return match write_bridge_error(stream, bridge::BridgeError::Internal) {
+            Ok(()) => {
+                stats.failure_count.fetch_add(1, Ordering::SeqCst);
+                Ok(HandleOutcome::AlreadyCounted)
+            }
+            Err(_) => Err(format!("set read timeout: {error}")),
         };
     }
     if let Err(error) = stream.set_write_timeout(Some(timeout)) {
-        let written = write_bridge_error(stream, bridge::BridgeError::Internal);
-        stats.failure_count.fetch_add(1, Ordering::SeqCst);
-        return if written.is_ok() {
-            Ok(false)
-        } else {
-            Err(format!("set write timeout: {error}"))
+        return match write_bridge_error(stream, bridge::BridgeError::Internal) {
+            Ok(()) => {
+                stats.failure_count.fetch_add(1, Ordering::SeqCst);
+                Ok(HandleOutcome::AlreadyCounted)
+            }
+            Err(_) => Err(format!("set write timeout: {error}")),
         };
     }
     let request = match read_http_request(stream) {
         Ok(request) => request,
         Err(error) if is_socket_read_timeout(&error) => {
             write_bridge_error(stream, bridge::BridgeError::Timeout)?;
-            // 504 信封已写出：计失败并返回 Ok(false)，防止外层再补写第二响应。
+            // 504 信封已写出：计失败并返回 AlreadyCounted，防外层补第二响应。
             stats.failure_count.fetch_add(1, Ordering::SeqCst);
-            return Ok(false);
+            return Ok(HandleOutcome::AlreadyCounted);
         }
         Err(error) => {
             let error = if error.contains("too large") {
@@ -579,15 +600,27 @@ fn handle_connection_accounted(
             } else {
                 bridge::BridgeError::InvalidRequest
             };
-            stats.failure_count.fetch_add(1, Ordering::SeqCst);
+            // 写成功才内部记账；写失败交给外层唯一自增点（T1 双计数修复）。
             return match write_bridge_error(stream, error) {
-                Ok(()) => Ok(false),
+                Ok(()) => {
+                    stats.failure_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(HandleOutcome::AlreadyCounted)
+                }
                 Err(write_error) => Err(write_error),
             };
         }
     };
+    if request.hop < MAX_RUNTIME_HOPS
+        && request.method == "GET"
+        && (request.path == "/health" || request.path == "/v1/health")
+    {
+        let value = health_response(providers, Some(stats));
+        stats.health_probes.fetch_add(1, Ordering::SeqCst);
+        write_json(stream, 200, value)?;
+        return Ok(HandleOutcome::AlreadyCounted);
+    }
     match handle_request(stream, home, &request, providers, stats) {
-        Ok(()) => Ok(true),
+        Ok(()) => Ok(HandleOutcome::CountSuccess),
         Err(error) => Err(error),
     }
 }
@@ -1661,14 +1694,23 @@ fn is_runtime_upstream(base_url: &str) -> bool {
 }
 
 fn health_response(providers: &[ProviderProfile], stats: Option<&RuntimeStats>) -> Value {
-    let (uptime_seconds, active_connections, success_count, failure_count) = match stats {
+    let (
+        uptime_seconds,
+        active_connections,
+        success_count,
+        failure_count,
+        rejected_overload,
+        health_probes,
+    ) = match stats {
         Some(stats) => (
             stats.started_at.elapsed().as_secs(),
             stats.active_connections.load(Ordering::SeqCst),
             stats.success_count.load(Ordering::SeqCst),
             stats.failure_count.load(Ordering::SeqCst),
+            stats.rejected_overload.load(Ordering::SeqCst),
+            stats.health_probes.load(Ordering::SeqCst),
         ),
-        None => (0, 0, 0, 0),
+        None => (0, 0, 0, 0, 0, 0),
     };
     json!({
         "ok": true,
@@ -1678,6 +1720,8 @@ fn health_response(providers: &[ProviderProfile], stats: Option<&RuntimeStats>) 
         "active_connections": active_connections,
         "success_count": success_count,
         "failure_count": failure_count,
+        "rejected_overload": rejected_overload,
+        "health_probes": health_probes,
         "provider_count": providers.len(),
         "capabilities": {
             "entry_points": {
@@ -4169,6 +4213,8 @@ mod tests {
         assert_eq!(health["active_connections"], json!(1));
         assert_eq!(health["success_count"], json!(3));
         assert_eq!(health["failure_count"], json!(1));
+        assert!(health.get("rejected_overload").is_some());
+        assert!(health.get("health_probes").is_some());
     }
 
     #[test]
@@ -4608,6 +4654,41 @@ mod tests {
     }
 
     #[test]
+    fn health_probe_counts_neither_success_nor_failure() {
+        let providers = vec![provider("test", ProtocolKind::OpenAiChat)];
+        let home = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stats_arc = std::sync::Arc::new(RuntimeStats::new());
+        let stats_for_thread = std::sync::Arc::clone(&stats_arc);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            handle_connection_accounted(
+                &mut stream,
+                home.path(),
+                &providers,
+                Duration::from_secs(5),
+                &stats_for_thread,
+            )
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nhost: x\r\n\r\n")
+            .unwrap();
+        let mut buf = Vec::new();
+        let _ = client.set_read_timeout(Some(Duration::from_secs(5)));
+        let _ = client.read_to_end(&mut buf);
+        let outcome = server.join().unwrap();
+        assert!(
+            matches!(outcome, Ok(HandleOutcome::AlreadyCounted)),
+            "got: {outcome:?}"
+        );
+        assert_eq!(stats_arc.health_probes.load(Ordering::SeqCst), 1);
+        assert_eq!(stats_arc.success_count.load(Ordering::SeqCst), 0);
+        assert_eq!(stats_arc.failure_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn timeout_counts_as_failure_not_success() {
         let providers = vec![provider("test", ProtocolKind::OpenAiChat)];
         let home = tempfile::tempdir().unwrap();
@@ -4627,10 +4708,15 @@ mod tests {
         });
         let _client = TcpStream::connect(address).unwrap();
         let outcome = server.join().unwrap();
-        // 超时已写出 504：不算成功，也不允许外层再写 500。
-        assert!(matches!(outcome, Ok(false)), "got: {outcome:?}");
+        // 超时已写出 504：内部计失败，外层不得再写 500 或重复计数。
+        assert!(
+            matches!(outcome, Ok(HandleOutcome::AlreadyCounted)),
+            "got: {outcome:?}"
+        );
         assert_eq!(stats_arc.failure_count.load(Ordering::SeqCst), 1);
         assert_eq!(stats_arc.success_count.load(Ordering::SeqCst), 0);
+        // 健康探测不进 success：自 poll 不稀释成功率。
+        assert_eq!(stats_arc.health_probes.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -1450,6 +1450,18 @@ pub(super) fn validate_target_representability(
             field: "anthropic.thinking".to_string(),
         });
     }
+    // [C1] 重名守卫必须在共享层：chat 按名回填 strict、tool_choice 按名寻址，
+    // anthropic/responses 入口放进来的重名工具转 chat 上游时会复现同一歧义。
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for tool in &ir.tools {
+            if !seen.insert(tool.name.as_str()) {
+                return Err(BridgeError::Unsupported {
+                    field: "tools.duplicate_name".to_string(),
+                });
+            }
+        }
+    }
     if target == WireProtocol::OpenAiResponses {
         return Ok(());
     }
