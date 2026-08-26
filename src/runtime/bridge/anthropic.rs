@@ -625,11 +625,14 @@ pub(super) fn encode_request(ir: &RequestIr, model: &str) -> Result<Value, Bridg
     if let Some(value) = ir.extensions.get(EXT_ANTHROPIC_THINKING) {
         body.insert("thinking".to_string(), value.clone());
     } else if ir.generation.reasoning_effort.is_some() {
+        // Anthropic 约束: budget_tokens >= 1024 且严格 < max_tokens。
+        // 始终注入（rectifier 兜底：上游因预算不足拒绝时剥 thinking 重试），
+        // 但确保 budget < max_tokens 以避免最常见违规。
         body.insert(
             "thinking".to_string(),
             json!({
                 "type": "enabled",
-                "budget_tokens": max_tokens.saturating_sub(1)
+                "budget_tokens": std::cmp::max(max_tokens.saturating_sub(1), 1)
             }),
         );
     }
