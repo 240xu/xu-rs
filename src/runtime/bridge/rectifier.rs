@@ -20,7 +20,7 @@ pub trait RequestRectifier {
 /// rectification when this matches, so `DefaultRectifier` never rewrites a
 /// request for an unrelated rejection.
 pub fn thinking_rejection(error_body: &str) -> bool {
-    error_body.contains("thinking")
+    error_body.contains("thinking") || error_body.contains("budget_tokens")
 }
 
 pub struct NoopRectifier;

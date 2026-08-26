@@ -1534,7 +1534,13 @@ fn process_is_running(pid: u32) -> bool {
 
 impl Drop for InstallLock {
     fn drop(&mut self) {
-        fs::remove_file(&self.path).ok();
+        let own = std::process::id().to_string();
+        if fs::read_to_string(&self.path)
+            .map(|s| s.trim() == own)
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 

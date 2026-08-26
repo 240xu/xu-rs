@@ -24,19 +24,37 @@ pub fn profiles_from_xu_chat_json(text: &str) -> Result<Vec<ProviderProfile>, St
         .ok_or_else(|| "missing provider object".to_string())?;
 
     let mut out = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for (id, value) in providers {
-        let obj = value
-            .as_object()
-            .ok_or_else(|| format!("provider {id} must be an object"))?;
-        let options = obj
-            .get("options")
-            .and_then(|v| v.as_object())
-            .ok_or_else(|| format!("provider {id} missing options"))?;
-        let models_value = obj
-            .get("models")
-            .ok_or_else(|| format!("provider {id} missing models"))?;
+        let obj = match value.as_object() {
+            Some(o) => o,
+            None => {
+                warnings.push(format!("provider {id} must be an object"));
+                continue;
+            }
+        };
+        let options = match obj.get("options").and_then(|v| v.as_object()) {
+            Some(o) => o,
+            None => {
+                warnings.push(format!("provider {id} missing options"));
+                continue;
+            }
+        };
+        let models_value = match obj.get("models") {
+            Some(v) => v,
+            None => {
+                warnings.push(format!("provider {id} missing models"));
+                continue;
+            }
+        };
         let (models, model_entries, model_metadata) = match models_value {
-            Value::Array(items) => model_entries_from_array(items)?,
+            Value::Array(items) => match model_entries_from_array(items) {
+                Ok(v) => v,
+                Err(e) => {
+                    warnings.push(format!("provider {id}: {e}"));
+                    continue;
+                }
+            },
             Value::Object(map) => {
                 let models: Vec<String> = map.keys().cloned().collect();
                 let model_metadata = map
@@ -64,7 +82,10 @@ pub fn profiles_from_xu_chat_json(text: &str) -> Result<Vec<ProviderProfile>, St
                     .collect();
                 (models, model_entries, model_metadata)
             }
-            _ => return Err(format!("provider {id} models must be an object or array")),
+            _ => {
+                warnings.push(format!("provider {id} models must be an object or array"));
+                continue;
+            }
         };
         let mut claude_slots = claude_slots_from_metadata(&model_metadata);
         if let Some(slots) = obj.get("claudeSlots").and_then(Value::as_object) {
@@ -75,7 +96,8 @@ pub fn profiles_from_xu_chat_json(text: &str) -> Result<Vec<ProviderProfile>, St
             }
         }
         if models.is_empty() {
-            return Err(format!("provider {id} has no models"));
+            warnings.push(format!("provider {id} has no models"));
+            continue;
         }
 
         let protocol_text = text_field(obj, "protocol")
@@ -83,11 +105,22 @@ pub fn profiles_from_xu_chat_json(text: &str) -> Result<Vec<ProviderProfile>, St
             .or_else(|| text_field_value(options, "protocol"))
             .or_else(|| text_field_value(options, "apiKind"))
             .unwrap_or_else(|| "chat".to_string());
-        let protocol =
-            ProtocolKind::parse_legacy(&protocol_text).map_err(|e| format!("provider {id} {e}"))?;
-        let base_url = text_field_value(options, "baseURL")
+        let protocol = match ProtocolKind::parse_legacy(&protocol_text) {
+            Ok(p) => p,
+            Err(e) => {
+                warnings.push(format!("provider {id} {e}"));
+                continue;
+            }
+        };
+        let base_url = match text_field_value(options, "baseURL")
             .or_else(|| text_field_value(options, "base_url"))
-            .ok_or_else(|| format!("provider {id} missing baseURL"))?;
+        {
+            Some(v) => v,
+            None => {
+                warnings.push(format!("provider {id} missing baseURL"));
+                continue;
+            }
+        };
         let api_key = text_field_value(options, "apiKey")
             .or_else(|| text_field_value(options, "api_key"))
             .unwrap_or_default();
@@ -126,7 +159,12 @@ pub fn profiles_from_xu_chat_json(text: &str) -> Result<Vec<ProviderProfile>, St
                 .unwrap_or_default(),
         });
     }
-
+    if out.is_empty() && !warnings.is_empty() {
+        return Err(warnings.join("; "));
+    }
+    for w in &warnings {
+        eprintln!("[warn] {w}");
+    }
     Ok(out)
 }
 
