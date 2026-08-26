@@ -283,15 +283,9 @@ fn parse_tools(value: Option<&Value>) -> Result<Vec<ToolDefinitionIr>, BridgeErr
             ))
         })
         .collect::<Result<_, _>>()?;
-    // 同名工具让 strict 按名回填与上游 tool_choice 寻址产生歧义——解析期 fail-closed。
-    let mut seen = std::collections::BTreeSet::new();
-    for tool in &tools {
-        if !seen.insert(tool.name.as_str()) {
-            return Err(BridgeError::Unsupported {
-                field: "tools.duplicate_name".to_string(),
-            });
-        }
-    }
+    // 同名工具让 strict 按名回填与上游 tool_choice 寻址产生歧义——解析期
+    // 与共享 IR 校验层（request.rs）共用同一守卫，防双份实现漂移。
+    super::request::reject_duplicate_tool_names(&tools)?;
     Ok(tools)
 }
 
@@ -1608,6 +1602,18 @@ mod tests {
         assert!(
             matches!(&error, super::BridgeError::Unsupported { field } if field == "tools.duplicate_name"),
             "got: {error:?}"
+        );
+        // 钉住 responses 目标：守卫必须位于 OpenAiResponses 早退分支之前，
+        // 否则未来重排会让 responses 编码静默放行重名（R2 评审指出的脆弱序）。
+        let responses_error = super::super::request::encode_upstream_request(
+            &ir,
+            super::super::WireProtocol::OpenAiResponses,
+            "responses-upstream",
+        )
+        .expect_err("duplicate tools must fail for responses target too");
+        assert!(
+            matches!(&responses_error, super::BridgeError::Unsupported { field } if field == "tools.duplicate_name"),
+            "got: {responses_error:?}"
         );
     }
 

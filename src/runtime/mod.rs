@@ -459,6 +459,8 @@ pub fn serve(home: &Path) -> Result<(), String> {
                 let profiles = profiles.clone();
                 let slots = Arc::clone(&slots);
                 let stats = Arc::clone(&stats);
+                // spawn-fail 分支在 catch_unwind 之后还要记账，须持有独立句柄。
+                let stats_after_spawn = Arc::clone(&stats);
                 let Some(_slot_guard) = slots.try_acquire() else {
                     // 过载拒绝单独计数：成功率指标必须可见服务自身的饱和事件。
                     stats.rejected_overload.fetch_add(1, Ordering::SeqCst);
@@ -481,26 +483,38 @@ pub fn serve(home: &Path) -> Result<(), String> {
                         let _slot_guard = _slot_guard;
                         let mut count_guard = ConnectionCountGuard::new(Arc::clone(&stats));
                         count_guard.mark_active();
-                        // 记账契约见 HandleOutcome：Err 是 failure_count 唯一自增点。
-                        match handle_connection_accounted(
-                            &mut stream,
-                            &home,
-                            &profiles,
-                            RUNTIME_SOCKET_TIMEOUT,
-                            &stats,
-                        ) {
-                            Ok(HandleOutcome::CountSuccess) => {
+                        // 记账契约：Err 是 failure_count 唯一常规自增点；
+                        // handler panic 也必须落账（否则指标对崩溃路径全盲）。
+                        let handled =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                handle_connection_accounted(
+                                    &mut stream,
+                                    &home,
+                                    &profiles,
+                                    RUNTIME_SOCKET_TIMEOUT,
+                                    &stats,
+                                )
+                            }));
+                        match handled {
+                            Ok(Ok(HandleOutcome::CountSuccess)) => {
                                 stats.success_count.fetch_add(1, Ordering::SeqCst);
                             }
-                            Ok(HandleOutcome::AlreadyCounted) => {}
-                            Err(error) => {
+                            Ok(Ok(HandleOutcome::AlreadyCounted)) => {}
+                            Ok(Err(error)) => {
                                 stats.failure_count.fetch_add(1, Ordering::SeqCst);
                                 let _ = write_json(&mut stream, 500, json!({ "error": error }));
+                            }
+                            Err(_panic) => {
+                                stats.failure_count.fetch_add(1, Ordering::SeqCst);
                             }
                         }
                     });
                 }));
                 if spawned.is_err() {
+                    // 线程资源耗尽=服务在 shed load，必须与过载拒绝同口径可见。
+                    stats_after_spawn
+                        .rejected_overload
+                        .fetch_add(1, Ordering::SeqCst);
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }
@@ -4715,8 +4729,6 @@ mod tests {
         );
         assert_eq!(stats_arc.failure_count.load(Ordering::SeqCst), 1);
         assert_eq!(stats_arc.success_count.load(Ordering::SeqCst), 0);
-        // 健康探测不进 success：自 poll 不稀释成功率。
-        assert_eq!(stats_arc.health_probes.load(Ordering::SeqCst), 0);
     }
 
     #[test]

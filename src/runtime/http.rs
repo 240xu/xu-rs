@@ -213,7 +213,7 @@ pub(super) fn drain_incoming(stream: &mut std::net::TcpStream) {
 }
 
 /// RFC 9110 §6.6.1：源站响应 MUST 带 Date。
-pub(super) fn http_date() -> String {
+pub(crate) fn http_date() -> String {
     chrono::Utc::now()
         .format("%a, %d %b %Y %H:%M:%S GMT")
         .to_string()

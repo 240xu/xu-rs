@@ -1439,6 +1439,22 @@ pub(super) fn validate_tool_state(messages: &[super::ir::MessageIr]) -> Result<(
     Ok(())
 }
 
+/// 工具重名唯一守卫（单一事实源）：chat 按名回填 strict、tool_choice 按
+/// 名寻址——重名在任何目标协议下都是歧义，统一 Unsupported 诊断。
+pub(super) fn reject_duplicate_tool_names(
+    tools: &[super::ir::ToolDefinitionIr],
+) -> Result<(), BridgeError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for tool in tools {
+        if !seen.insert(tool.name.as_str()) {
+            return Err(BridgeError::Unsupported {
+                field: "tools.duplicate_name".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn validate_target_representability(
     ir: &RequestIr,
     target: WireProtocol,
@@ -1452,16 +1468,7 @@ pub(super) fn validate_target_representability(
     }
     // [C1] 重名守卫必须在共享层：chat 按名回填 strict、tool_choice 按名寻址，
     // anthropic/responses 入口放进来的重名工具转 chat 上游时会复现同一歧义。
-    {
-        let mut seen = std::collections::BTreeSet::new();
-        for tool in &ir.tools {
-            if !seen.insert(tool.name.as_str()) {
-                return Err(BridgeError::Unsupported {
-                    field: "tools.duplicate_name".to_string(),
-                });
-            }
-        }
-    }
+    reject_duplicate_tool_names(&ir.tools)?;
     if target == WireProtocol::OpenAiResponses {
         return Ok(());
     }
