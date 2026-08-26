@@ -67,10 +67,11 @@ impl FileLock {
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        unsafe {
-            let _ = libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
-        }
+        // 先 unlink 再释放锁：持有锁期间移除路径，竞争者无法再通过路径
+        // 打开旧 inode 并加锁（open 会得到新 inode 或 ENOENT），杜绝
+        // 「B 在旧孤儿 inode 上锁成功 + C 在新 inode 上也锁成功」的双持窗口。
         let _ = fs::remove_file(&self.path);
+        // fd 关闭时内核自动释放 flock；显式 LOCK_UN 不再需要。
     }
 }
 

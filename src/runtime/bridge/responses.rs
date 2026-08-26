@@ -1601,6 +1601,7 @@ pub(super) fn decode_stream_frame(
             state.require_wire_item(WireProtocol::OpenAiResponses, output_index, &item_id)?;
         }
         "response.reasoning_summary_part.added"
+        | "response.reasoning_summary_part.done"
         | "response.reasoning_summary_text.done"
         | "response.reasoning_content.delta.done" => {
             reject_unknown_fields(

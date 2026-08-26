@@ -1480,24 +1480,38 @@ struct InstallLock {
 
 impl InstallLock {
     fn acquire(path: &Path) -> Result<Self, String> {
-        if path.exists() {
-            let active = fs::read_to_string(path)
-                .ok()
-                .and_then(|text| text.trim().parse::<u32>().ok())
-                .is_some_and(process_is_running);
-            if active {
-                return Err(format!(
-                    "another spec install may be running: {}",
-                    path.display()
-                ));
-            }
-            fs::remove_file(path).map_err(|e| format!("remove stale {}: {e}", path.display()))?;
-        }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
-        fs::write(path, std::process::id().to_string())
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        // 原子占位：O_EXCL create_new 保证并发下只有一个进程能创建锁文件
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .or_else(|_| {
+                // 文件已存在：检查持有者 pid 是否存活
+                let active = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| text.trim().parse::<u32>().ok())
+                    .is_some_and(process_is_running);
+                if active {
+                    return Err(format!(
+                        "another spec install may be running: {}",
+                        path.display()
+                    ));
+                }
+                fs::remove_file(path)
+                    .map_err(|e| format!("remove stale {}: {e}", path.display()))?;
+                // stale 清理后重试原子创建（仍可能被并发抢占→报错让调用方重试）
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .map_err(|e| format!("lock contention on {}: {e}", path.display()))
+            })
+            .map_err(|e| e)?;
+        use std::io::Write;
+        let _ = file.write_all(std::process::id().to_string().as_bytes());
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).ok();
         Ok(Self {
             path: path.to_path_buf(),

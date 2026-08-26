@@ -629,7 +629,7 @@ pub(super) fn encode_request(ir: &RequestIr, model: &str) -> Result<Value, Bridg
             "thinking".to_string(),
             json!({
                 "type": "enabled",
-                "budget_tokens": max_tokens
+                "budget_tokens": max_tokens.saturating_sub(1)
             }),
         );
     }
