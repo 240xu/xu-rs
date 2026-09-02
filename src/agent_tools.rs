@@ -822,22 +822,61 @@ fn patch_subprocess_local() -> Result<(), String> {
 }
 
 fn patch_fs_search() -> Result<(), String> {
-    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js");
-    if !path.exists() {
-        return Err("dsh-tool-fs-search 缺失（dsh 未安装？）".to_string());
+    // 需要同时修全局 npm 包与已物化的 profile 副本（bootstrap 已把前者拷到后者）
+    let candidates = {
+        let global =
+            prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js");
+        let home = dirs::home_dir()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/data/data/com.termux/files/home"));
+        let mut v = vec![global];
+        for profile in ["headless", "web", "tui", "dsh-tui"] {
+            v.push(home.join(format!(
+                ".dsh/profiles/{profile}/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
+            )));
+            v.push(home.join(format!(
+                ".dsh/profiles/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
+            )));
+        }
+        v
+    };
+    let mut patched = 0usize;
+    let mut last_err: Option<String> = None;
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("dsh-tool-fs-search 读取失败 {}：{e}", path.display()))?;
+        if content.contains("android-arm64") {
+            patched += 1;
+            continue;
+        }
+        // 兼容两代上游锚点：0.1.0 时代的 import().then() 与 0.1.1-rc.2 起的 Promise.resolve().then(async sidecar)
+        let old_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath);\n\treturn rgPathPromise;\n}";
+        let new_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+        let old_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
+        let new_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+        let fixed = if content.contains(old_v1) {
+            content.replace(old_v1, new_v1)
+        } else if content.contains(old_v2) {
+            content.replace(old_v2, new_v2)
+        } else {
+            last_err = Some(format!(
+                "resolveRgPath 标记未找到（dsh 内部变更？）: {}",
+                path.display()
+            ));
+            continue;
+        };
+        atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())?;
+        patched += 1;
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("dsh-tool-fs-search 读取失败：{e}"))?;
-    if content.contains("android-arm64") {
-        return Ok(());
+    if patched == 0 {
+        return Err(
+            last_err.unwrap_or_else(|| "dsh-tool-fs-search 缺失（dsh 未安装？）".to_string())
+        );
     }
-    let old = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath);\n\treturn rgPathPromise;\n}";
-    if !content.contains(old) {
-        return Err("resolveRgPath 标记未找到（dsh 内部变更？）".to_string());
-    }
-    let neu = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
-    let fixed = content.replace(old, neu);
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn patch_playwright_ld_preload(home: &Path) -> Result<(), String> {
