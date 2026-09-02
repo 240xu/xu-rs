@@ -778,10 +778,16 @@ fn patch_attachment_local(home: &Path) -> Result<(), String> {
 /// android". Add an android branch that hands the path to `termux-open`, and let
 /// canOpenNativePath report Android as openable so surfaces keep offering the button.
 fn patch_apiproxy_termux_open() -> Result<(), String> {
-    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js");
-    if !path.exists() {
-        return Err("dsh-host-apiproxy 缺失（dsh 未安装？）".to_string());
-    }
+    // 上游 0.1.2-alpha.5 起重命名：dsh-host-apiproxy → dsh-native-command；两路径都尝试
+    let candidates = [
+        prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js"),
+        prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-native-command/lib/index.js"),
+    ];
+    let path = candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .ok_or_else(|| "dsh-native-command/dsh-host-apiproxy 缺失（dsh 未安装？）".to_string())?;
     let content = fs::read_to_string(&path).map_err(|e| format!("apiproxy 读取失败：{e}"))?;
     if content.contains("termux-open") {
         return Ok(());
@@ -852,15 +858,19 @@ fn patch_fs_search() -> Result<(), String> {
             patched += 1;
             continue;
         }
-        // 兼容两代上游锚点：0.1.0 时代的 import().then() 与 0.1.1-rc.2 起的 Promise.resolve().then(async sidecar)
+        // 兼容三代上游锚点：v1 import().then() / v2 Promise.resolve + simple sidecar / v3 Promise.resolve + parse sidecar (0.1.2-alpha.5)
         let old_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath);\n\treturn rgPathPromise;\n}";
         let new_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
         let old_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
         let new_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+        let old_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
+        let new_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
         let fixed = if content.contains(old_v1) {
             content.replace(old_v1, new_v1)
         } else if content.contains(old_v2) {
             content.replace(old_v2, new_v2)
+        } else if content.contains(old_v3) {
+            content.replace(old_v3, new_v3)
         } else {
             last_err = Some(format!(
                 "resolveRgPath 标记未找到（dsh 内部变更？）: {}",
@@ -1297,6 +1307,40 @@ fn latest_version(tool: AgentTool) -> Result<String, String> {
         AgentToolKind::OpenCode => "opencode-linux-arm64",
         AgentToolKind::Dsh => "@deepseek-ai/dsh",
     };
+    // DSH 有 alpha 通道超前于 latest 时，取两者最大值（避免 latest 滞后导致误判“已是最新”）
+    if tool.id == AgentToolId::Dsh {
+        if let Ok(out) = run_capture("npm", &["view", package, "dist-tags", "--json"], 30) {
+            if let Ok(tags) = serde_json::from_str::<serde_json::Value>(&out) {
+                let mut candidates = Vec::new();
+                for tag in ["alpha", "next", "latest"] {
+                    if let Some(v) = tags.get(tag).and_then(|v| v.as_str()) {
+                        if let Some(parsed) = parse_version(v) {
+                            candidates.push(parsed);
+                        }
+                    }
+                }
+                if !candidates.is_empty() {
+                    candidates.sort_by(|a, b| compare_versions(a, b).cmp(&0).reverse());
+                    // compare_versions(a,b) <0  means a<b, so reverse gives descending
+                    // 简化：直接用 max_by 按 semver 比较
+                    let best = candidates
+                        .into_iter()
+                        .max_by(|a, b| {
+                            let ord = compare_versions(a, b);
+                            if ord < 0 {
+                                std::cmp::Ordering::Less
+                            } else if ord > 0 {
+                                std::cmp::Ordering::Greater
+                            } else {
+                                a.cmp(b)
+                            }
+                        })
+                        .unwrap();
+                    return Ok(best);
+                }
+            }
+        }
+    }
     let out = run_capture("npm", &["view", package, "version"], 30)?;
     parse_version(&out).ok_or_else(|| format!("无法解析最新版本：{package}"))
 }
