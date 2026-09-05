@@ -748,28 +748,27 @@ fn rebuild_node_pty() -> Result<(), String> {
 fn patch_attachment_local(home: &Path) -> Result<(), String> {
     let path = profiles_node_modules(home).join("dsh-attachment-local/lib/index.js");
     let content = fs::read_to_string(&path).map_err(|e| format!("attachment-local 缺失：{e}"))?;
-    if content.contains("loadSharp") {
+    if content.contains("sharp is unavailable on this platform") {
         return Ok(());
     }
+    // sharp has no android-arm64 prebuild (Termux/bionic): the static import
+    // fails at module load and takes the whole plugin down. Replace it with a
+    // top-level-await stub (file is ESM, Node supports TLA) so the plugin
+    // loads and only actual image calls throw a clear error. This covers ALL
+    // call sites at once (probe/detect/normalize pipelines), present and
+    // future, regardless of upstream indentation refactors.
     let imp_old = "import sharp from \"sharp\";\n";
     if !content.contains(imp_old) {
-        return Err("attachment-local sharp 标记未找到（dsh 内部变更？）".to_string());
+        if content.contains("sharp(") {
+            return Err(
+                "attachment-local sharp 调用仍在但 import 形态已变（dsh 内部变更？）".to_string(),
+            );
+        }
+        return Ok(());
     }
-    let lazy = "// sharp has no android-arm64 prebuild (Termux/bionic). Load lazily so the\n// plugin and its attachments service stay usable; only image upload paths fail.\nlet sharpModule = null;\nasync function loadSharp() {\n\tif (sharpModule) return sharpModule;\n\ttry {\n\t\tsharpModule = (await import(\"sharp\")).default;\n\t} catch (error) {\n\t\tthrow new AttachmentError(\"sharp is unavailable on this platform.\", \"UNSUPPORTED_PLATFORM\", { cause: error });\n\t}\n\treturn sharpModule;\n}\n";
-    let anchor = "//#region lib/types/image.js";
-    let probe_old = "\t\treturn await imageMetadata(sharp(data, {\n\t\t\tfailOn: \"error\",\n\t\t\tlimitInputPixels: false\n\t\t}));";
-    let probe_new = "\t\treturn await imageMetadata((await loadSharp())(data, {\n\t\t\tfailOn: \"error\",\n\t\t\tlimitInputPixels: false\n\t\t}));";
-    let detect_old = "\t\tconst image = sharp(data, {\n\t\t\tfailOn: \"error\",\n\t\t\tlimitInputPixels: false\n\t\t});";
-    let detect_new = "\t\tconst image = (await loadSharp())(data, {\n\t\t\tfailOn: \"error\",\n\t\t\tlimitInputPixels: false\n\t\t});";
-    if !content.contains(anchor) || !content.contains(probe_old) || !content.contains(detect_old) {
-        return Err("attachment-local 结构标记未找到（dsh 内部变更？）".to_string());
-    }
-    let fixed = content
-        .replace(imp_old, "")
-        .replace(anchor, &format!("{lazy}{anchor}"))
-        .replace(probe_old, probe_new)
-        .replace(detect_old, detect_new);
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    let stub = "let sharp;\ntry {\n\tsharp = (await import(\"sharp\")).default;\n} catch {\n\tsharp = (...args) => {\n\t\tthrow new AttachmentError(\"sharp is unavailable on this platform.\", \"UNSUPPORTED_PLATFORM\");\n\t};\n}\n";
+    let fixed = content.replace(imp_old, stub);
+    return atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string());
 }
 
 /// Termux fix: dsh-host-apiproxy's native path opener only has darwin/win32/linux
@@ -1320,21 +1319,10 @@ fn latest_version(tool: AgentTool) -> Result<String, String> {
                     }
                 }
                 if !candidates.is_empty() {
-                    candidates.sort_by(|a, b| compare_versions(a, b).cmp(&0).reverse());
-                    // compare_versions(a,b) <0  means a<b, so reverse gives descending
-                    // 简化：直接用 max_by 按 semver 比较
+                    // compare_versions <0 means a<b；取最大值即最新（含 alpha/beta/rc 排序）
                     let best = candidates
                         .into_iter()
-                        .max_by(|a, b| {
-                            let ord = compare_versions(a, b);
-                            if ord < 0 {
-                                std::cmp::Ordering::Less
-                            } else if ord > 0 {
-                                std::cmp::Ordering::Greater
-                            } else {
-                                a.cmp(b)
-                            }
-                        })
+                        .max_by(|a, b| compare_versions(a, b).cmp(&0).then_with(|| a.cmp(b)))
                         .unwrap();
                     return Ok(best);
                 }
@@ -1516,21 +1504,67 @@ fn parse_version(text: &str) -> Option<String> {
 }
 
 pub fn compare_versions(a: &str, b: &str) -> i32 {
-    let parse = |value: &str| -> [i32; 3] {
+    fn split(value: &str) -> ([i32; 3], Option<String>) {
+        let (core, pre) = match value.split_once('-') {
+            Some((c, p)) => (c, Some(p.to_string())),
+            None => (value, None),
+        };
         let mut nums = [0, 0, 0];
-        for (index, part) in value.split(['.', '-']).take(3).enumerate() {
+        for (index, part) in core.split('.').take(3).enumerate() {
             nums[index] = part.parse().unwrap_or(0);
         }
-        nums
-    };
-    let left = parse(a);
-    let right = parse(b);
-    for index in 0..3 {
-        if left[index] != right[index] {
-            return left[index] - right[index];
+        (nums, pre)
+    }
+    // release > rc > beta > alpha > other; larger rank = newer
+    fn pre_rank(pre: &Option<String>) -> (i32, Vec<i64>) {
+        match pre {
+            None => (4, Vec::new()),
+            Some(s) => {
+                let lower = s.to_ascii_lowercase();
+                let (name, rest) = match lower.find(|c: char| c.is_ascii_digit()) {
+                    Some(i) => (&lower[..i], &lower[i..]),
+                    None => (lower.as_str(), ""),
+                };
+                let name = name.trim_end_matches(['.', '-', '_']);
+                let rank = match name {
+                    "rc" => 3,
+                    "beta" | "b" => 2,
+                    "alpha" | "a" => 1,
+                    _ => 0,
+                };
+                let nums = rest
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter(|p| !p.is_empty())
+                    .filter_map(|p| p.parse::<i64>().ok())
+                    .collect();
+                (rank, nums)
+            }
         }
     }
-    0
+    let (ln, lp) = split(a);
+    let (rn, rp) = split(b);
+    for index in 0..3 {
+        if ln[index] != rn[index] {
+            return ln[index] - rn[index];
+        }
+    }
+    let (lr, lnums) = pre_rank(&lp);
+    let (rr, rnums) = pre_rank(&rp);
+    if lr != rr {
+        return lr - rr;
+    }
+    for (l, r) in lnums.iter().zip(rnums.iter()) {
+        match l.cmp(r) {
+            std::cmp::Ordering::Less => return -1,
+            std::cmp::Ordering::Greater => return 1,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    match lnums.len().cmp(&rnums.len()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+    }
 }
 
 fn npm_arch() -> &'static str {
@@ -1630,6 +1664,16 @@ impl Drop for InstallLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compare_versions_orders_prereleases() {
+        assert!(compare_versions("0.1.2-rc.1", "0.1.2-alpha.5") > 0);
+        assert!(compare_versions("0.1.2-alpha.5", "0.1.2-rc.1") < 0);
+        assert!(compare_versions("0.1.2", "0.1.2-rc.1") > 0);
+        assert!(compare_versions("0.1.2-beta.1", "0.1.2-alpha.9") > 0);
+        assert_eq!(compare_versions("0.1.1-rc.2", "0.1.1-rc.2"), 0);
+        assert!(compare_versions("0.1.2-rc.1", "0.1.1-rc.2") > 0);
+    }
 
     #[test]
     fn writes_embedded_opencode_loader_assets() {
