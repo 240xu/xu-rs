@@ -21,11 +21,11 @@ const BIN_VERSION = "0.1.0";
 // sha256 of the release tarballs, from dist/SHA256SUMS at release time.
 const CHECKSUMS = {
   "xcc-0.1.0-android-aarch64.tar.gz":
-    "2c4453c5561fd265b7ff097fcee9b57504f18b7bf9825db0f60bc361f73479de",
+    "3179556659f7cee9a4140280a2e3a5e4e5c72c4697e7fecfd8a5d88816086f28",
 };
 
 // GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
-const ASSET_ID = "546889225";
+const ASSET_ID = "547039790";
 
 function assetForPlatform() {
   const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
@@ -94,7 +94,9 @@ async function main() {
   const vendor = join(__dirname, "vendor");
   mkdirSync(vendor, { recursive: true });
   // Tarball layout: <name>/xcc (+ README/LICENSE/...). Extract only the binary.
-  execFileSync("tar", ["-xzf", tmp, "-C", vendor, "--strip-components=1", `${asset.replace(/\.tar\.gz$/, "")}/xcc`]);
+  // Tarball layout: <name>/bin/xcc (+ README/LICENSE). Extract only the binary.
+  const member = `${asset.replace(/\.tar\.gz$/, "")}/bin/xcc`;
+  execFileSync("tar", ["-xzf", tmp, "-C", vendor, "--strip-components=2", member]);
   chmodSync(join(vendor, "xcc"), 0o755);
   console.log(`[xcc] installed ${asset} -> vendor/xcc`);
 }
