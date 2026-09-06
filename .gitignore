@@ -3,3 +3,4 @@
 *.xu.*.bak
 
 build-release.log
+build.log
