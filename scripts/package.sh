@@ -1,43 +1,40 @@
-#!/bin/sh
-set -eu
+#!/data/data/com.termux/files/usr/bin/bash
+# Package xcc release tarballs for distribution.
+set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-cd "$ROOT"
+NAME="xcc"
+VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 
-VERSION=$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
-TARGET=${TARGET:-"${OS}-${ARCH}"}
-if [ -n "${ANDROID_ROOT:-}" ] || [ -n "${TERMUX_VERSION:-}" ]; then
-  TARGET="android-${ARCH}"
-fi
-NAME="xcc-${VERSION}-${TARGET}"
-DIST="$ROOT/dist"
-STAGE="$DIST/$NAME"
+# Detect target triple
+case "$(uname -m)" in
+  aarch64|arm64) ARCH="aarch64" ;;
+  x86_64|amd64)  ARCH="x86_64" ;;
+  *)             ARCH="$(uname -m)" ;;
+esac
+case "$(uname -o 2>/dev/null || uname -s)" in
+  *Android*) OS="android" ;;
+  *Linux*)   OS="linux" ;;
+  Darwin)    OS="darwin" ;;
+  *)         OS="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+esac
+TARGET="${OS}-${ARCH}"
 
-cargo build --release
-
-rm -f "$DIST"/xcc-*.tar.gz "$DIST"/SHA256SUMS
+DIST="dist"
+STAGE="${DIST}/stage"
 rm -rf "$STAGE"
-mkdir -p "$STAGE"
-cp "$ROOT/target/release/xcc" "$STAGE/xcc"
-cp "$ROOT/README.md" "$STAGE/README.md"
-cp "$ROOT/LICENSE" "$STAGE/LICENSE"
-cp "$ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
-cp "$ROOT/IMPLEMENTATION_PLAN.md" "$STAGE/IMPLEMENTATION_PLAN.md"
-cp "$ROOT/scripts/install-termux.sh" "$STAGE/install-termux.sh"
-chmod 0755 "$STAGE/install-termux.sh"
+mkdir -p "$STAGE/${NAME}-${VERSION}-${TARGET}/bin"
 
-tar -C "$DIST" -czf "$DIST/$NAME.tar.gz" "$NAME"
+cp "target/release/${NAME}" "$STAGE/${NAME}-${VERSION}-${TARGET}/bin/${NAME}"
+chmod 0755 "$STAGE/${NAME}-${VERSION}-${TARGET}/bin/${NAME}"
+
+# Include user-facing docs if present
+for f in README.md LICENSE README_ZH.md; do
+  [ -f "$f" ] && cp "$f" "$STAGE/${NAME}-${VERSION}-${TARGET}/" || true
+done
+
+mkdir -p "$DIST"
+OUT="${NAME}-${VERSION}-${TARGET}.tar.gz"
+tar -czf "${DIST}/${OUT}" -C "$STAGE" "${NAME}-${VERSION}-${TARGET}"
+
 rm -rf "$STAGE"
-
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$DIST" && sha256sum "$NAME.tar.gz" > SHA256SUMS)
-elif command -v shasum >/dev/null 2>&1; then
-  (cd "$DIST" && shasum -a 256 "$NAME.tar.gz" > SHA256SUMS)
-else
-  printf 'error: no sha256 tool found; checksum not written\n' >&2
-  exit 1
-fi
-
-printf 'created %s\n' "$DIST/$NAME.tar.gz"
+sha256sum "${DIST}/${OUT}"
