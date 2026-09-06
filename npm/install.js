@@ -2,7 +2,7 @@
 // Post-unpack fetcher: downloads the prebuilt trivium binary for this platform
 // from GitHub Releases, verifies sha256, extracts it into ./vendor/.
 // Node builtins only. Needs a system `tar` for .tar.gz extraction.
-const { createWriteStream, existsSync, mkdirSync, chmodSync } = require("node:fs");
+const { createWriteStream, existsSync, mkdirSync, chmodSync, unlinkSync, statSync } = require("node:fs");
 const { get } = require("node:https");
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
@@ -27,6 +27,10 @@ const CHECKSUMS = {
 // GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
 const ASSET_ID = "547284461";
 
+// Expected byte size of the tarball; guards against truncated / HTML error pages
+// being accepted as a valid download.
+const EXPECTED_SIZE = 4407493;
+
 function assetForPlatform() {
   const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
   const arch = process.arch; // 'arm64', 'x64', ...
@@ -47,6 +51,7 @@ function download(url, dest, headers = {}) {
         }
         if (res.statusCode !== 200) {
           res.resume();
+          try { unlinkSync(dest); } catch {}
           return reject(
             new Error(`download failed: HTTP ${res.statusCode} for ${url}`)
           );
@@ -80,13 +85,24 @@ async function main() {
     console.error(`[trivium] no checksum recorded for ${asset}; refusing to install.`);
     process.exit(1);
   }
-  // Fetch via the API asset endpoint: it 302s to release-assets.githubusercontent.com.
-  // We do NOT use github.com/.../releases/download/... because github.com itself is
-  // unreachable from some networks (China/Termux) and would hard-fail the install.
-  const url = `https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}`;
+  // Prefer the CDN direct link (no rate limit). The API asset endpoint is a
+  // fallback: it works when the caller supplies a token, but ANONYMOUS API
+  // requests are capped at 60/hour, which will fail installs on shared IPs.
+  const direct = `https://github.com/${REPO}/releases/download/v${BIN_VERSION}/${asset}`;
+  const api = `https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}`;
   const tmp = join(tmpdir(), asset);
-  console.log(`[trivium] fetching ${asset} via GitHub API`);
-  await download(url, tmp, { Accept: "application/octet-stream" });
+  console.log(`[trivium] fetching ${asset}`);
+  try {
+    await download(direct, tmp);
+  } catch (e) {
+    console.log(`[trivium] direct link failed (${e.message}), trying API endpoint`);
+    await download(api, tmp, { Accept: "application/octet-stream" });
+  }
+  const got = statSync(tmp).size;
+  if (got !== EXPECTED_SIZE) {
+    try { unlinkSync(tmp); } catch {}
+    throw new Error(`[trivium] size mismatch for ${asset}: got ${got}, want ${EXPECTED_SIZE}`);
+  }
   const sum = createHash("sha256").update(require("node:fs").readFileSync(tmp)).digest("hex");
   if (sum !== expected) {
     throw new Error(`[trivium] checksum mismatch for ${asset}: got ${sum}, want ${expected}`);
