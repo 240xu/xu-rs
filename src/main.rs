@@ -7,9 +7,9 @@ mod ui;
 use app::*;
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
-use spec::agent_tools::{status_rows, AgentToolStatus};
-use spec::domain::{AgentTarget, ProviderProfile};
-use spec::state::{ProviderHealth, UiSurface};
+use trivium::agent_tools::{status_rows, AgentToolStatus};
+use trivium::domain::{AgentTarget, ProviderProfile};
+use trivium::state::{ProviderHealth, UiSurface};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,7 +101,7 @@ fn detail_field_save_result(
         .get(state.selected)
         .ok_or_else(|| "没有选中的 provider。".to_string())?;
     let args = detail_update_args(provider, field, buf)?;
-    spec::cli::run_command(home, &args)
+    trivium::cli::run_command(home, &args)
         .ok_or_else(|| "provider update 命令不可用。".to_string())
         .and_then(|result| result)
 }
@@ -131,7 +131,7 @@ fn detail_slot_pick_result(
         .get(sel)
         .ok_or_else(|| "没有选中的模型。".to_string())?;
     let args = detail_slot_args(provider, slot, model)?;
-    spec::cli::run_command(home, &args)
+    trivium::cli::run_command(home, &args)
         .ok_or_else(|| "provider update 命令不可用。".to_string())
         .and_then(|result| result)
 }
@@ -165,7 +165,7 @@ fn detail_multi_save_result(
         .get(state.selected)
         .ok_or_else(|| "没有选中的 provider。".to_string())?;
     let args = detail_multi_models_args(provider, list, selected)?;
-    spec::cli::run_command(home, &args)
+    trivium::cli::run_command(home, &args)
         .ok_or_else(|| "provider update 命令不可用。".to_string())
         .and_then(|result| result)
 }
@@ -327,21 +327,21 @@ fn toggle_web(
 ) {
     if *web_running {
         web_stop.store(true, Ordering::Relaxed);
-        let _ = spec::state::set_ui_surface(home, UiSurface::Tui);
+        let _ = trivium::state::set_ui_surface(home, UiSurface::Tui);
         *web_running = false;
         *mode = *prev_mode_for_web;
         web_notice.clear();
     } else {
-        let persistence_warning = spec::state::set_ui_surface(home, UiSurface::Web)
+        let persistence_warning = trivium::state::set_ui_surface(home, UiSurface::Web)
             .err()
             .map(|error| format!("\n无法保存下次启动偏好：{error}"))
             .unwrap_or_default();
         let stop = Arc::new(AtomicBool::new(false));
-        let port = spec::web::default_port();
+        let port = trivium::web::default_port();
         // 预检端口：被占（常见于残留实例）时不切换、不写偏好，直接告知。
         if std::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], port))).is_err()
         {
-            let _ = spec::state::set_ui_surface(home, UiSurface::Tui);
+            let _ = trivium::state::set_ui_surface(home, UiSurface::Tui);
             *connection_result =
                 format!("Web 启动失败：端口 {port} 已被占用（可能有残留实例）。\n\n已保持终端界面；如需强制回 TUI 可运行: spec tui-reset");
             *mode = Mode::ConnectionResult;
@@ -349,7 +349,7 @@ fn toggle_web(
         }
         let thread_stop = Arc::clone(&stop);
         std::thread::spawn(move || {
-            let _ = spec::web::serve(port, thread_stop);
+            let _ = trivium::web::serve(port, thread_stop);
         });
         *web_stop = stop;
         *web_running = true;
@@ -436,7 +436,7 @@ fn apply_provider_mouse_action(
 }
 
 /// 把 SyncReport 渲染为多行文本。
-fn format_sync_report(report: &spec::sync::SyncReport) -> String {
+fn format_sync_report(report: &trivium::sync::SyncReport) -> String {
     let mut out = format!(
         "新增 {} · 更新 {} · 删除 {} · 未变 {}",
         report.added, report.updated, report.removed, report.unchanged
@@ -452,7 +452,7 @@ fn format_sync_report(report: &spec::sync::SyncReport) -> String {
 }
 
 fn reset_ui_surface_to_tui(home: &Path) {
-    if let Err(error) = spec::state::set_ui_surface(home, UiSurface::Tui) {
+    if let Err(error) = trivium::state::set_ui_surface(home, UiSurface::Tui) {
         eprintln!("恢复 TUI 偏好失败：{error}（可运行 spec tui-reset 重试）");
     }
 }
@@ -460,12 +460,12 @@ fn reset_ui_surface_to_tui(home: &Path) {
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("xcc-switch {}", env!("CARGO_PKG_VERSION"));
+        println!("trivium {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     let home = config::home();
     if args.first().map(String::as_str) == Some("tui-reset") {
-        match spec::state::set_ui_surface(&home, spec::state::UiSurface::Tui) {
+        match trivium::state::set_ui_surface(&home, trivium::state::UiSurface::Tui) {
             Ok(()) => println!("已重置：下次启动进入 TUI"),
             Err(error) => {
                 eprintln!("重置失败：{error}");
@@ -475,13 +475,13 @@ fn main() {
         return;
     }
     if args.first().map(String::as_str) == Some("serve") {
-        if let Err(error) = spec::runtime::serve(&home) {
+        if let Err(error) = trivium::runtime::serve(&home) {
             eprintln!("spec 服务启动失败：{error}");
             std::process::exit(1);
         }
         return;
     }
-    if let Some(result) = spec::cli::run_command(&home, &args) {
+    if let Some(result) = trivium::cli::run_command(&home, &args) {
         match result {
             Ok(output) => println!("{output}"),
             Err(error) => {
@@ -491,9 +491,9 @@ fn main() {
         }
         return;
     }
-    if matches!(spec::state::preferred_ui_surface(&home), Ok(UiSurface::Web)) {
-        let port = spec::web::default_port();
-        match spec::web::serve(port, Arc::new(AtomicBool::new(false))) {
+    if matches!(trivium::state::preferred_ui_surface(&home), Ok(UiSurface::Web)) {
+        let port = trivium::web::default_port();
+        match trivium::web::serve(port, Arc::new(AtomicBool::new(false))) {
             Ok(()) => return,
             Err(error) => {
                 // 端口占用等失败必须给出逃生门：回落 TUI 而不是反复锁死。
@@ -562,7 +562,7 @@ fn main() {
     let mut web_notice = String::new();
     let mut prev_mode_for_web = Mode::Menu;
     let mut opencode_permission =
-        spec::opencode_settings::read_permission(&home).unwrap_or_else(|_| "ask".to_string());
+        trivium::opencode_settings::read_permission(&home).unwrap_or_else(|_| "ask".to_string());
     let mut pending_opencode_permission: Option<String> = None;
     let mut opencode_settings_message = String::new();
     let (mut mcp_servers, mut mcp_error) = load_mcp_servers();
@@ -594,7 +594,7 @@ fn main() {
     let mut detail_focus_zone: u8 = 0;
     let mut detail_focus_index: usize = 0;
     // 运行时健康缓存（避免每帧 TCP/HTTP）；启动时预热一次，避免首帧误报。
-    let mut runtime_ok = spec::runtime::is_running();
+    let mut runtime_ok = trivium::runtime::is_running();
     let mut runtime_check_at = std::time::Instant::now();
     // 模型列表异步拉取：loading 标记 + 结果通道 + 完成后的目标模式。
     let mut detail_fetch_loading = false;
@@ -655,7 +655,7 @@ fn main() {
             match rx.try_recv() {
                 Ok(result) => {
                     connection_result = result;
-                    provider_state.health = spec::state::read_state(&home)
+                    provider_state.health = trivium::state::read_state(&home)
                         .map(|state| state.provider_health)
                         .unwrap_or_default();
                     need_redraw = true;
@@ -1184,7 +1184,7 @@ fn main() {
         // 运行时健康检查缓存：is_running() 内部是 TCP+HTTP，只允许 1s 一次，
         // 避免每次重绘（如模型列表箭头移动）都做一次网络请求造成卡顿。
         if runtime_check_at.elapsed() >= Duration::from_millis(1000) {
-            runtime_ok = spec::runtime::is_running();
+            runtime_ok = trivium::runtime::is_running();
             runtime_check_at = std::time::Instant::now();
         }
 
@@ -2301,7 +2301,7 @@ fn main() {
                                                 Some(provider) if provider.protocol == kind => {}
                                                 Some(provider) => {
                                                     let args = detail_set_kind_args(provider, kind);
-                                                    match spec::cli::run_command(&home, &args)
+                                                    match trivium::cli::run_command(&home, &args)
                                                         .ok_or_else(|| {
                                                             "provider update 命令不可用。"
                                                                 .to_string()
@@ -2758,7 +2758,7 @@ fn main() {
                                     Some(provider) if provider.protocol == kind => {}
                                     Some(provider) => {
                                         let args = detail_set_kind_args(provider, kind);
-                                        match spec::cli::run_command(&home, &args)
+                                        match trivium::cli::run_command(&home, &args)
                                             .ok_or_else(|| {
                                                 "provider update 命令不可用。".to_string()
                                             })
@@ -3120,14 +3120,14 @@ fn main() {
                         need_redraw = true;
                     }
                     KeyCode::Down => {
-                        let len = spec::provider_presets::all().len();
+                        let len = trivium::provider_presets::all().len();
                         if provider_preset_idx < len.saturating_sub(1) {
                             provider_preset_idx += 1;
                             need_redraw = true;
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(preset) = spec::provider_presets::all().get(provider_preset_idx)
+                        if let Some(preset) = trivium::provider_presets::all().get(provider_preset_idx)
                         {
                             provider_add_form = provider_add_form_from_preset(preset);
                             mode = Mode::ProviderAddForm;
@@ -3143,7 +3143,7 @@ fn main() {
                         &m,
                     ) {
                         provider_preset_idx = index;
-                        if let Some(preset) = spec::provider_presets::all().get(index) {
+                        if let Some(preset) = trivium::provider_presets::all().get(index) {
                             provider_add_form = provider_add_form_from_preset(preset);
                             mode = Mode::ProviderAddForm;
                         }
@@ -3263,7 +3263,7 @@ fn main() {
                         if pending_opencode_permission.is_some() =>
                     {
                         let permission = pending_opencode_permission.take().unwrap_or_default();
-                        match spec::opencode_settings::set_permission(&home, &permission, false) {
+                        match trivium::opencode_settings::set_permission(&home, &permission, false) {
                             Ok(result) => {
                                 opencode_permission = permission;
                                 opencode_settings_message = format!(
@@ -3294,7 +3294,7 @@ fn main() {
                             pending_opencode_permission = None;
                             mode = Mode::Client;
                         } else {
-                            match spec::opencode_settings::set_permission(&home, action, true) {
+                            match trivium::opencode_settings::set_permission(&home, action, true) {
                                 Ok(result) => {
                                     pending_opencode_permission = Some(action.to_string());
                                     opencode_settings_message = format!(
@@ -3453,7 +3453,7 @@ fn main() {
                                 } else {
                                     let (message, elapsed) =
                                         run_with_busy(&mut terminal, "正在同步 MCP…", || {
-                                            match spec::sync_mcp::sync_mcp(
+                                            match trivium::sync_mcp::sync_mcp(
                                                 &home,
                                                 AgentTarget::OpenCode,
                                                 &[target],
@@ -3722,7 +3722,7 @@ fn main() {
                                     let (message, elapsed) = run_with_busy(
                                         &mut terminal,
                                         "正在同步 Skills…",
-                                        || match spec::sync::sync_skills(
+                                        || match trivium::sync::sync_skills(
                                             &home,
                                             AgentTarget::OpenCode,
                                             &[target],
@@ -4100,7 +4100,7 @@ fn main() {
                         need_redraw = true;
                     }
                     KeyCode::Down => {
-                        if mcp_preset_selected + 1 < spec::mcp::MCP_PRESETS.len() {
+                        if mcp_preset_selected + 1 < trivium::mcp::MCP_PRESETS.len() {
                             mcp_preset_selected += 1;
                             need_redraw = true;
                         }

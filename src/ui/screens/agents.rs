@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use spec::agent_tools::AgentToolStatus;
+use trivium::agent_tools::AgentToolStatus;
 
 use crate::ui::screens::chrome::list_window_rects;
 use crate::ui::theme;
@@ -35,7 +35,7 @@ pub fn agent_has_update(status: &AgentToolStatus) -> bool {
         status.current_version.as_deref(),
         status.latest_version.as_deref(),
     ) {
-        (Some(current), Some(latest)) => spec::agent_tools::compare_versions(current, latest) < 0,
+        (Some(current), Some(latest)) => trivium::agent_tools::compare_versions(current, latest) < 0,
         _ => false,
     }
 }
@@ -306,7 +306,7 @@ pub fn agent_card_button_spec(
     }
     match (current, latest) {
         (Some(current), Some(latest))
-            if spec::agent_tools::compare_versions(current, latest) < 0 =>
+            if trivium::agent_tools::compare_versions(current, latest) < 0 =>
         {
             ("upd", Color::Green)
         }
@@ -320,7 +320,7 @@ pub fn agent_card_button_spec(
 pub fn agent_version_line_color(current: Option<&str>, latest: Option<&str>) -> Color {
     match (current, latest) {
         (Some(current), Some(latest))
-            if spec::agent_tools::compare_versions(current, latest) < 0 =>
+            if trivium::agent_tools::compare_versions(current, latest) < 0 =>
         {
             Color::Yellow
         }
@@ -335,7 +335,7 @@ pub fn agent_version_line_text(current: Option<&str>, latest: Option<&str>) -> S
         (None, Some(latest)) => format!("状态：未安装 → 将安装 {latest}"),
         (None, None) => "状态：未安装 → 将查询并安装最新版".to_string(),
         (Some(current), Some(latest))
-            if spec::agent_tools::compare_versions(current, latest) < 0 =>
+            if trivium::agent_tools::compare_versions(current, latest) < 0 =>
         {
             format!("更新：{current} → {latest}")
         }
@@ -351,11 +351,11 @@ pub fn agent_toolbar_rects(area: Rect, chip_count: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spec::agent_tools::AgentToolStatus;
+    use trivium::agent_tools::AgentToolStatus;
 
     fn status(current: Option<&str>, latest: Option<&str>) -> AgentToolStatus {
         AgentToolStatus {
-            tool: spec::agent_tools::AGENT_TOOLS[0],
+            tool: trivium::agent_tools::AGENT_TOOLS[0],
             command_path: None,
             current_version: current.map(|s| s.to_string()),
             latest_version: latest.map(|s| s.to_string()),

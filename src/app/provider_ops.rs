@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use crate::config;
 use crate::ProviderState;
-use spec::agents::AgentTarget;
-use spec::domain::{ProtocolKind, ProviderProfile};
-use spec::patch::PatchOptions;
+use trivium::agents::AgentTarget;
+use trivium::domain::{ProtocolKind, ProviderProfile};
+use trivium::patch::PatchOptions;
 
 /// One row of the CC Switch style model mapping table: the client-facing
 /// display name (col 1) and the upstream request name (col 2).
@@ -59,7 +59,7 @@ pub fn build_plan_preview_for_ids(
         return "没有选中的 provider。".to_string();
     }
     let home = config::home();
-    let plan = match spec::agents::apply_agent(&home, target, &state.providers, provider_ids) {
+    let plan = match trivium::agents::apply_agent(&home, target, &state.providers, provider_ids) {
         Ok(plan) => plan,
         Err(error) => return format!("无法生成计划：{error}"),
     };
@@ -93,7 +93,7 @@ pub fn build_plan_preview_for_ids(
 
     out.push_str("\nDiff 预览：\n");
     for patch in &plan.patches {
-        match spec::patch::apply_patch(
+        match trivium::patch::apply_patch(
             patch,
             PatchOptions {
                 dry_run: true,
@@ -204,7 +204,7 @@ pub fn provider_delete_confirm_message(state: &ProviderState) -> String {
 }
 
 pub fn provider_add_form_from_preset(
-    preset: &spec::provider_presets::ProviderPreset,
+    preset: &trivium::provider_presets::ProviderPreset,
 ) -> ProviderAddForm {
     ProviderAddForm {
         id: String::new(),
@@ -797,7 +797,7 @@ pub fn model_delete_focused(form: &mut ProviderAddForm) {
 
 pub fn build_provider_add_preview(form: &ProviderAddForm) -> Result<String, String> {
     let args = provider_add_args(form, true)?;
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => Ok(format!(
             "{output}\n\n即将添加 provider：{}\n协议：{}\nBase URL：{}\n模型：{}\n密钥：<hidden>\n\n这一步还没有写文件。按 y 确认添加，按 n 或 Esc 返回编辑。",
             form.id.trim(),
@@ -815,7 +815,7 @@ pub fn add_provider_from_form(form: &ProviderAddForm) -> String {
         Ok(args) => args,
         Err(error) => return format!("添加失败：{error}\n\nEsc 返回供应商列表。"),
     };
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => format!("{output}\n\n已备份 供应商配置。Esc 返回供应商列表。"),
         Some(Err(error)) => format!("添加失败：{error}\n\nEsc 返回供应商列表。"),
         None => "添加失败：provider add 命令不可用。".to_string(),
@@ -882,7 +882,7 @@ pub fn build_provider_update_preview(form: &ProviderAddForm) -> Result<String, S
     } else {
         form.id.trim().to_string()
     };
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => Ok(format!(
             "{output}\n\n即将更新 provider：{}\n协议：{}\nBase URL：{}\n默认模型：{}\n模型：{}\n超时/重试：{} ms / {}\n上下文/输出：{} / {}\nReasoning：{}\n密钥：{}\n\n这一步还没有写文件。按 y 确认更新，按 n 或 Esc 返回编辑。",
             resolved_id,
@@ -907,7 +907,7 @@ pub fn update_provider_from_form(form: &ProviderAddForm) -> String {
         Ok(args) => args,
         Err(error) => return format!("更新失败：{error}\n\nEsc 返回供应商列表。"),
     };
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => format!("{output}\n\n已备份 供应商配置。Esc 返回供应商列表。"),
         Some(Err(error)) => format!("更新失败：{error}\n\nEsc 返回供应商列表。"),
         None => "更新失败：provider update 命令不可用。".to_string(),
@@ -1155,7 +1155,7 @@ pub fn parse_fetch_models_output(output: &str) -> Result<Vec<ProviderModelRow>, 
 
 /// Apply the result of a background model fetch to the edit form (preview
 /// only; nothing is saved until the update is confirmed). Pure: never touches
-/// the network or `spec::cli` — the worker thread owns the fetch.
+/// the network or `trivium::cli` — the worker thread owns the fetch.
 pub fn apply_models_fetch_result(
     form: &mut ProviderAddForm,
     result: Result<Vec<ProviderModelRow>, String>,
@@ -1480,13 +1480,13 @@ pub fn toggle_opencode_provider(
 /// 持久化 opencode 端「未生效」状态（与 enable 路径的 current_provider_patch
 /// 对称），失败仅告警（文件已改，无法回滚）。
 fn clear_opencode_state(home: &Path, state: &mut ProviderState) {
-    let Ok(patch) = spec::state::current_provider_patch(home, AgentTarget::OpenCode, "") else {
+    let Ok(patch) = trivium::state::current_provider_patch(home, AgentTarget::OpenCode, "") else {
         eprintln!("opencode 生效关闭后 state 写入失败");
         return;
     };
-    if let Err(error) = spec::patch::apply_patch(
+    if let Err(error) = trivium::patch::apply_patch(
         &patch,
-        spec::patch::PatchOptions {
+        trivium::patch::PatchOptions {
             dry_run: false,
             backup: true,
         },
@@ -1555,7 +1555,7 @@ pub fn detail_fetch_models(provider: &ProviderProfile) -> Result<Vec<String>, St
         "fetch-models".to_string(),
         provider.id.clone(),
     ];
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => parse_fetch_models_output(&output)
             .map(|rows| rows.into_iter().map(|row| row.display_name).collect()),
         Some(Err(error)) => Err(format!("拉取失败：{error}")),
@@ -2022,7 +2022,7 @@ pub fn delete_selected_provider(state: &mut ProviderState) -> String {
         provider.id.clone(),
         "--yes".to_string(),
     ];
-    match spec::cli::run_command(&config::home(), &args) {
+    match trivium::cli::run_command(&config::home(), &args) {
         Some(Ok(output)) => format!("{output}\n\nEsc 返回供应商列表。"),
         Some(Err(error)) => format!("删除失败：{error}\n\nEsc 返回供应商列表。"),
         None => "删除失败：provider delete 命令不可用。".to_string(),
@@ -2042,18 +2042,18 @@ pub fn apply_provider_plan(
     };
 
     let home = config::home();
-    let mut plan = match spec::agents::apply_agent(&home, target, &state.providers, provider_ids) {
+    let mut plan = match trivium::agents::apply_agent(&home, target, &state.providers, provider_ids) {
         Ok(plan) => plan,
         Err(error) => return format!("应用失败：无法生成计划：{error}"),
     };
     let state_value = provider_ids.join(",");
-    let state_patch = match spec::state::current_provider_patch(&home, target, &state_value) {
+    let state_patch = match trivium::state::current_provider_patch(&home, target, &state_value) {
         Ok(patch) => patch,
         Err(error) => return format!("应用失败：无法生成状态计划：{error}"),
     };
     plan.patches.push(state_patch);
 
-    let results = match spec::cli::apply_plan(&plan, false) {
+    let results = match trivium::cli::apply_plan(&plan, false) {
         Ok(results) => results,
         Err(error) => return format!("应用失败：{error}"),
     };
@@ -2111,7 +2111,7 @@ fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spec::providers::store::profiles_from_xu_chat_json;
+    use trivium::providers::store::profiles_from_xu_chat_json;
 
     fn detail_profile() -> ProviderProfile {
         ProviderProfile {
@@ -2119,7 +2119,7 @@ mod tests {
             name: "Zen".to_string(),
             notes: Some("备注".to_string()),
             website: None,
-            vendor: spec::domain::ProviderVendor::CustomOpenAiCompatible,
+            vendor: trivium::domain::ProviderVendor::CustomOpenAiCompatible,
             protocol: ProtocolKind::OpenAiChat,
             base_url: "https://zen.example/v1".to_string(),
             api_key: "sk-secret".to_string(),
@@ -2136,7 +2136,7 @@ mod tests {
             context_window: 0,
             max_output_tokens: 0,
             reasoning_effort: None,
-            cache_mode: spec::domain::CacheMode::Auto,
+            cache_mode: trivium::domain::CacheMode::Auto,
         }
     }
 
@@ -2273,7 +2273,7 @@ mod tests {
         provider.model_entries.clear();
         provider.model_entries.insert(
             "Zebra".into(),
-            spec::domain::ModelEntry {
+            trivium::domain::ModelEntry {
                 client_name: "Zebra".into(),
                 display_name: "Zebra".into(),
                 request_name: "zebra-upstream".into(),
@@ -2281,7 +2281,7 @@ mod tests {
         );
         provider.model_entries.insert(
             "Alpha".into(),
-            spec::domain::ModelEntry {
+            trivium::domain::ModelEntry {
                 client_name: "Alpha".into(),
                 display_name: "Alpha".into(),
                 request_name: "alpha-upstream".into(),
@@ -2289,7 +2289,7 @@ mod tests {
         );
         provider.model_entries.insert(
             "Mid".into(),
-            spec::domain::ModelEntry {
+            trivium::domain::ModelEntry {
                 client_name: "Mid".into(),
                 display_name: "Mid".into(),
                 request_name: "Mid".into(),
@@ -2305,7 +2305,7 @@ mod tests {
         provider.models = vec!["client-key".into()];
         provider.model_entries.insert(
             "client-key".into(),
-            spec::domain::ModelEntry {
+            trivium::domain::ModelEntry {
                 client_name: "client-key".into(),
                 display_name: "Client key".into(),
                 request_name: "upstream-name".into(),
@@ -2706,7 +2706,7 @@ mod tests {
         provider.models = vec!["client-key".into()];
         provider.model_entries.insert(
             "client-key".into(),
-            spec::domain::ModelEntry {
+            trivium::domain::ModelEntry {
                 client_name: "client-key".into(),
                 display_name: "Client key".into(),
                 request_name: "upstream-name".into(),

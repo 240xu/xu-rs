@@ -1,5 +1,5 @@
 use crossterm::event::KeyCode;
-use spec::agent_tools::{status_rows, AgentToolStatus};
+use trivium::agent_tools::{status_rows, AgentToolStatus};
 
 use super::{
     elapsed_message, ensure_agent_versions_for_clients, ensure_agent_versions_for_install,
@@ -14,7 +14,7 @@ fn build_latest_check_message(statuses: &[AgentToolStatus], headline: &str) -> S
         msg.push_str(&format!(
             "- {}: {}\n",
             row.tool.label,
-            spec::agent_tools::version_transition_text(
+            trivium::agent_tools::version_transition_text(
                 row.current_version.as_deref(),
                 row.latest_version.as_deref(),
             )
@@ -105,7 +105,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                         *s.agent_status_message = format!(
                             "再点一次确认更新 {}：{}",
                             row.tool.label,
-                            spec::agent_tools::version_transition_text(
+                            trivium::agent_tools::version_transition_text(
                                 row.current_version.as_deref(),
                                 row.latest_version.as_deref(),
                             )
@@ -141,7 +141,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                             *s.agent_status_message = format!(
                                 "再点一次确认更新 {}：{}",
                                 row.tool.label,
-                                spec::agent_tools::version_transition_text(
+                                trivium::agent_tools::version_transition_text(
                                     row.current_version.as_deref(),
                                     row.latest_version.as_deref(),
                                 )
@@ -184,7 +184,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                 *s.agent_pending_update = None;
                 *s.agent_pending_setup = false;
                 let (message, elapsed) = run_with_busy(s.terminal, "正在诊断环境…", || {
-                    spec::agent_tools::diagnostics(s.home)
+                    trivium::agent_tools::diagnostics(s.home)
                 });
                 *s.agent_status_message =
                     format!("{}\n\n{}", message, elapsed_message("诊断完成", elapsed));
@@ -206,7 +206,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                         msg.push_str(&format!(
                             "- {}：{}\n",
                             row.tool.label,
-                            spec::agent_tools::version_transition_text(
+                            trivium::agent_tools::version_transition_text(
                                 row.current_version.as_deref(),
                                 row.latest_version.as_deref(),
                             )
@@ -261,7 +261,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                         *s.agent_pending_setup = false;
                         let (message, elapsed) =
                             run_with_busy(s.terminal, "正在诊断环境…", || {
-                                spec::agent_tools::diagnostics(s.home)
+                                trivium::agent_tools::diagnostics(s.home)
                             });
                         *s.agent_status_message =
                             format!("{}\n\n{}", message, elapsed_message("诊断完成", elapsed));
@@ -287,7 +287,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                                 msg.push_str(&format!(
                                     "- {}：{}\n",
                                     row.tool.label,
-                                    spec::agent_tools::version_transition_text(
+                                    trivium::agent_tools::version_transition_text(
                                         row.current_version.as_deref(),
                                         row.latest_version.as_deref(),
                                     )
@@ -299,7 +299,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                     crate::ui::screens::agents::AgentMouseAction::OpenCodeSettings => {
                         *s.agent_pending_update = None;
                         *s.agent_pending_setup = false;
-                        *s.opencode_permission = spec::opencode_settings::read_permission(s.home)
+                        *s.opencode_permission = trivium::opencode_settings::read_permission(s.home)
                             .unwrap_or_else(|_| "ask".to_string());
                         *s.pending_opencode_permission = None;
                         s.opencode_settings_message.clear();
@@ -332,7 +332,7 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                                 *s.agent_status_message = format!(
                                     "再点一次确认更新 {}：{}",
                                     row.tool.label,
-                                    spec::agent_tools::version_transition_text(
+                                    trivium::agent_tools::version_transition_text(
                                         row.current_version.as_deref(),
                                         row.latest_version.as_deref(),
                                     )

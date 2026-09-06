@@ -17,7 +17,7 @@ pub fn init() -> io::Result<Tui> {
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
-        crossterm::terminal::SetTitle("spec"),
+        crossterm::terminal::SetTitle("trivium"),
     )?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;

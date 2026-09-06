@@ -3,22 +3,23 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PREFIX_DIR=${PREFIX:-/data/data/com.termux/files/usr}
-SPEC="$PREFIX_DIR/bin/xcc"
+BIN="$PREFIX_DIR/bin/trivium"
 
-if [ ! -x "$ROOT/xcc" ]; then
-  printf 'error: xcc binary not found next to install-termux.sh\n' >&2
+if [ ! -x "$ROOT/trivium" ]; then
+  printf 'error: trivium binary not found next to install-termux.sh\n' >&2
   exit 1
 fi
 
 mkdir -p "$PREFIX_DIR/bin"
-if [ -e "$PREFIX_DIR/bin/xcc" ]; then
-  cp "$PREFIX_DIR/bin/xcc" "$PREFIX_DIR/bin/xcc.before-release-install.bak"
+if [ -e "$PREFIX_DIR/bin/trivium" ]; then
+  cp "$PREFIX_DIR/bin/trivium" "$PREFIX_DIR/bin/trivium.before-release-install.bak"
 fi
-# 兼容旧命令名：保留 spec 指向 xcc 的软链，避免既有脚本断链
-ln -sf "$SPEC" "$PREFIX_DIR/bin/spec"
-install -m 0755 "$ROOT/xcc" "$PREFIX_DIR/bin/xcc"
+# 兼容旧命令名：保留 xcc / spec 软链，避免既有脚本与 runit 服务断链
+ln -sf "$BIN" "$PREFIX_DIR/bin/xcc"
+ln -sf "$BIN" "$PREFIX_DIR/bin/spec"
+install -m 0755 "$ROOT/trivium" "$PREFIX_DIR/bin/trivium"
 
-printf 'installed xcc (spec alias kept) to %s\n' "$PREFIX_DIR/bin/spec"
+printf 'installed trivium (xcc/spec aliases kept) to %s\n' "$PREFIX_DIR/bin/trivium"
 
 if [ "${1:-}" = "--setup-agents" ]; then
   exec "$SPEC" agent setup --yes
@@ -77,5 +78,5 @@ PROXYEOF
   exit 0
 fi
 
-printf 'to install/update all three agents, run:\n  xcc agent setup --yes\n'
-printf 'to install xcc + configure zen on all three clients, run:\n  ./install-termux.sh --setup-zen\n'
+printf 'to install/update all three agents, run:\n  trivium agent setup --yes\n'
+printf 'to install trivium + configure zen on all three clients, run:\n  ./install-termux.sh --setup-zen\n'

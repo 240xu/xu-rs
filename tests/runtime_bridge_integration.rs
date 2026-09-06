@@ -8,26 +8,26 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 mod domain {
-    pub use spec::domain::*;
+    pub use trivium::domain::*;
 }
 
 mod agents {
-    pub use spec::agents::*;
+    pub use trivium::agents::*;
 }
 
 mod providers {
-    pub use spec::providers::*;
+    pub use trivium::providers::*;
 }
 
 mod stats {
-    pub use spec::stats::*;
+    pub use trivium::stats::*;
 }
 
 #[path = "../src/runtime/mod.rs"]
 mod runtime;
 
 use serde_json::{json, Value};
-use spec::domain::{CacheMode, ProtocolKind, ProviderProfile, ProviderVendor};
+use trivium::domain::{CacheMode, ProtocolKind, ProviderProfile, ProviderVendor};
 
 #[derive(Clone, Copy, Debug)]
 struct Direction {

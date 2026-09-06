@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::ui::widgets::chips::Glyph;
-use spec::domain::AgentTarget;
+use trivium::domain::AgentTarget;
 
 use crate::ui::theme;
 use crate::ui::widgets::chips::point_in;
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn protocol_label_maps_each_kind() {
-        use spec::domain::ProtocolKind;
+        use trivium::domain::ProtocolKind;
         assert!(!protocol_label(ProtocolKind::OpenAiChat).is_empty());
         assert!(!protocol_label(ProtocolKind::OpenAiResponses).is_empty());
         assert!(!protocol_label(ProtocolKind::AnthropicMessages).is_empty());

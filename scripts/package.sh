@@ -1,8 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Package xcc release tarballs for distribution.
+# Package trivium release tarballs for distribution.
 set -euo pipefail
 
-NAME="xcc"
+NAME="trivium"
+# Compat aliases shipped alongside the main binary (decision: A/A/A — keep them).
+ALIASES="xcc spec"
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 
 # Detect target triple
@@ -26,6 +28,11 @@ mkdir -p "$STAGE/${NAME}-${VERSION}-${TARGET}/bin"
 
 cp "target/release/${NAME}" "$STAGE/${NAME}-${VERSION}-${TARGET}/bin/${NAME}"
 chmod 0755 "$STAGE/${NAME}-${VERSION}-${TARGET}/bin/${NAME}"
+
+# Symlinks so existing `xcc` / `spec` invocations and the runit service keep working.
+for a in $ALIASES; do
+  ln -sf "${NAME}" "$STAGE/${NAME}-${VERSION}-${TARGET}/bin/${a}"
+done
 
 # Include user-facing docs if present
 for f in README.md LICENSE README_ZH.md; do

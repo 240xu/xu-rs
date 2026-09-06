@@ -1,7 +1,7 @@
 use std::fs;
 
-use spec::adapters::{AgentTarget, RoutingMode};
-use spec::cli::{plan_from_home, run_command};
+use trivium::adapters::{AgentTarget, RoutingMode};
+use trivium::cli::{plan_from_home, run_command};
 
 #[test]
 fn mcp_cli_is_dry_run_by_default_and_applies_only_with_yes() {
@@ -34,7 +34,7 @@ fn mcp_cli_is_dry_run_by_default_and_applies_only_with_yes() {
     apply.push("--yes".to_string());
     let output = run_command(home.path(), &apply).unwrap().unwrap();
     assert!(output.contains("Applied MCP add"));
-    let store = spec::mcp::read_store(home.path()).unwrap();
+    let store = trivium::mcp::read_store(home.path()).unwrap();
     assert_eq!(store.servers["memory"].args[0], "-y");
     let opencode: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(home.path().join(".config/opencode/opencode.json")).unwrap(),
@@ -81,7 +81,7 @@ fn mcp_cli_disable_and_delete_remove_live_projection() {
         .map(str::to_string)
         .collect::<Vec<_>>();
     run_command(home.path(), &delete).unwrap().unwrap();
-    assert!(spec::mcp::read_store(home.path())
+    assert!(trivium::mcp::read_store(home.path())
         .unwrap()
         .servers
         .is_empty());
@@ -107,7 +107,7 @@ fn mcp_cli_import_is_dry_run_by_default() {
     apply.push("--yes".to_string());
     run_command(home.path(), &apply).unwrap().unwrap();
     assert!(
-        spec::mcp::read_store(home.path()).unwrap().servers["memory"]
+        trivium::mcp::read_store(home.path()).unwrap().servers["memory"]
             .targets
             .claude
     );
@@ -126,7 +126,7 @@ fn mcp_preset_is_dry_run_and_preserves_dash_argument() {
     let mut apply = args;
     apply.push("--yes".to_string());
     run_command(home.path(), &apply).unwrap().unwrap();
-    let store = spec::mcp::read_store(home.path()).unwrap();
+    let store = trivium::mcp::read_store(home.path()).unwrap();
     assert_eq!(store.servers["memory"].command.as_deref(), Some("npx"));
     assert_eq!(store.servers["memory"].args[0], "-y");
     assert!(store.servers["memory"].targets.codex);
@@ -153,7 +153,7 @@ fn mcp_import_all_reports_one_broken_app_and_keeps_successes() {
     assert!(output.contains("OpenCode: imported 1"));
     assert!(output.contains("Codex: failed:"));
     assert!(
-        spec::mcp::read_store(home.path()).unwrap().servers["memory"]
+        trivium::mcp::read_store(home.path()).unwrap().servers["memory"]
             .targets
             .opencode
     );
@@ -193,13 +193,13 @@ fn mcp_update_preserves_unspecified_fields_and_is_dry_run() {
     let output = run_command(home.path(), &update).unwrap().unwrap();
     assert!(output.contains("Dry-run MCP update"));
     assert_eq!(
-        spec::mcp::read_store(home.path()).unwrap().servers["memory"].name,
+        trivium::mcp::read_store(home.path()).unwrap().servers["memory"].name,
         "Old"
     );
     let mut apply = update;
     apply.push("--yes".to_string());
     run_command(home.path(), &apply).unwrap().unwrap();
-    let server = &spec::mcp::read_store(home.path()).unwrap().servers["memory"];
+    let server = &trivium::mcp::read_store(home.path()).unwrap().servers["memory"];
     assert_eq!(server.name, "New");
     assert_eq!(server.args, ["-y", "memory"]);
     assert_eq!(server.env["MODE"], "safe");
@@ -262,13 +262,13 @@ fn skill_cli_zip_install_update_uninstall_and_restore() {
         .status()
         .unwrap()
         .success());
-    let mut store = spec::skills::read_store(home.path()).unwrap();
-    store.skills.get_mut("cli-zip").unwrap().origin = Some(spec::skills::SkillOrigin::Zip {
+    let mut store = trivium::skills::read_store(home.path()).unwrap();
+    store.skills.get_mut("cli-zip").unwrap().origin = Some(trivium::skills::SkillOrigin::Zip {
         source: zip_v2.display().to_string(),
     });
-    spec::patch::apply_patch(
-        &spec::skills::store_patch(home.path(), &store).unwrap(),
-        spec::patch::PatchOptions {
+    trivium::patch::apply_patch(
+        &trivium::skills::store_patch(home.path(), &store).unwrap(),
+        trivium::patch::PatchOptions {
             dry_run: false,
             backup: false,
         },
@@ -312,7 +312,7 @@ fn skill_cli_zip_install_update_uninstall_and_restore() {
     .unwrap()
     .unwrap();
     assert!(backups.contains("cli-zip"));
-    let backup_id = spec::skills::read_backup_index(home.path()).unwrap()[0]
+    let backup_id = trivium::skills::read_backup_index(home.path()).unwrap()[0]
         .id
         .clone();
     run_command(
@@ -493,7 +493,7 @@ fn cli_use_dry_run_does_not_record_current_provider() {
 
     assert!(output.contains("Dry-run"));
     assert_eq!(
-        spec::state::current_provider(home.path(), AgentTarget::OpenCode).unwrap(),
+        trivium::state::current_provider(home.path(), AgentTarget::OpenCode).unwrap(),
         None
     );
 }
@@ -517,7 +517,7 @@ fn cli_use_records_current_provider_after_apply() {
 
     assert!(output.contains("Applied"));
     assert_eq!(
-        spec::state::current_provider(home.path(), AgentTarget::OpenCode).unwrap(),
+        trivium::state::current_provider(home.path(), AgentTarget::OpenCode).unwrap(),
         Some("zen".to_string())
     );
 }
@@ -628,7 +628,7 @@ fn provider_cli_add_show_and_delete() {
     .unwrap()
     .unwrap();
     let stored = fs::read_to_string(home.path().join(".codex/xu-chat-providers.json")).unwrap();
-    spec::state::set_provider_health(home.path(), "zen", "secret-key", true, Some(42), "ok")
+    trivium::state::set_provider_health(home.path(), "zen", "secret-key", true, Some(42), "ok")
         .unwrap();
     let delete = run_command(
         home.path(),
@@ -646,7 +646,7 @@ fn provider_cli_add_show_and_delete() {
     assert!(show.contains("api_key: <redacted>"));
     assert!(stored.contains(r#""apiKind": "chat""#));
     assert!(delete.contains("Deleted"));
-    assert!(spec::state::read_state(home.path())
+    assert!(trivium::state::read_state(home.path())
         .unwrap()
         .provider_health
         .is_empty());
@@ -920,7 +920,7 @@ fn provider_cli_rejects_invalid_website() {
 fn provider_cli_refuses_to_delete_active_provider() {
     let home = tempfile::tempdir().unwrap();
     write_chat_provider(home.path());
-    spec::state::set_current_provider(home.path(), AgentTarget::OpenCode, "zen").unwrap();
+    trivium::state::set_current_provider(home.path(), AgentTarget::OpenCode, "zen").unwrap();
 
     let err = run_command(
         home.path(),

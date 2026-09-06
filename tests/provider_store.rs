@@ -1,4 +1,4 @@
-use spec::provider_store::profiles_from_xu_chat_json;
+use trivium::provider_store::profiles_from_xu_chat_json;
 
 #[test]
 fn reads_existing_xu_chat_provider_shape() {

@@ -9,8 +9,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use spec::domain::AgentTarget;
-use spec::mcp::{McpServer, McpTransport};
+use trivium::domain::AgentTarget;
+use trivium::mcp::{McpServer, McpTransport};
 
 use crate::tui::Tui;
 use crate::ui::screens::chrome::list_window_rects;
@@ -214,13 +214,13 @@ pub fn render_mcp_presets(terminal: &mut Tui, selected: usize) -> io::Result<()>
         );
         let rows = list_window_rects(
             chunks[1],
-            spec::mcp::MCP_PRESETS.len(),
+            trivium::mcp::MCP_PRESETS.len(),
             selected,
             5,
-            spec::mcp::MCP_PRESETS.len(),
+            trivium::mcp::MCP_PRESETS.len(),
         );
         for (index, rect) in rows {
-            let preset = &spec::mcp::MCP_PRESETS[index];
+            let preset = &trivium::mcp::MCP_PRESETS[index];
             let active = index == selected;
             f.render_widget(
                 Paragraph::new(vec![
@@ -270,10 +270,10 @@ pub fn mcp_preset_hit_test(area: Rect, m: &MouseEvent) -> Option<usize> {
     );
     list_window_rects(
         content,
-        spec::mcp::MCP_PRESETS.len(),
+        trivium::mcp::MCP_PRESETS.len(),
         0,
         5,
-        spec::mcp::MCP_PRESETS.len(),
+        trivium::mcp::MCP_PRESETS.len(),
     )
     .into_iter()
     .find_map(|(index, rect)| point_in(rect, m.column, m.row).then_some(index))

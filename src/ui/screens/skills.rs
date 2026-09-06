@@ -11,7 +11,7 @@ use crate::ui::screens::extension::{
     extension_visible_cards, render_extension_cards, render_toolbar, ExtensionRow,
     EXTENSION_CARD_HEIGHT,
 };
-use spec::domain::AgentTarget;
+use trivium::domain::AgentTarget;
 
 use crate::ui::screens::chrome::list_window_rects;
 use crate::ui::screens::chrome::{render_sync_target_chips, sync_target_chips_hit_test};
@@ -40,7 +40,7 @@ pub enum SkillMouseAction {
 pub fn draw_skills_frame(
     f: &mut ratatui::Frame<'_>,
     area: Rect,
-    skills: &[spec::skills::SkillRecord],
+    skills: &[trivium::skills::SkillRecord],
     selected: usize,
     error: Option<&str>,
     message: &str,
@@ -111,13 +111,13 @@ pub fn draw_skills_frame(
             .iter()
             .map(|skill| {
                 let origin = match &skill.origin {
-                    Some(spec::skills::SkillOrigin::Local { source }) => {
+                    Some(trivium::skills::SkillOrigin::Local { source }) => {
                         format!("本地 · {source}")
                     }
-                    Some(spec::skills::SkillOrigin::Zip { source }) => {
+                    Some(trivium::skills::SkillOrigin::Zip { source }) => {
                         format!("压缩包 · {source}")
                     }
-                    Some(spec::skills::SkillOrigin::GitHub {
+                    Some(trivium::skills::SkillOrigin::GitHub {
                         owner,
                         repo,
                         branch,

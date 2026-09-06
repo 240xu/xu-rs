@@ -1,0 +1,31 @@
+test six_direction_request_contract_names_every_route ... ok
+test single_tool_streaming_routes_cover_all_protocol_directions ... ok
+test task10_cc_switch_differential_manifest_executes_xu_contract ... ok
+test test_helper_dispatches_health_without_a_runtime_daemon ... ok
+test streaming_routes_cover_all_protocol_directions ... ok
+test text_routes_cover_all_protocol_directions ... ok
+test truncated_upstream_sse_emits_source_error_event_after_headers ... ok
+test unknown_anthropic_cache_control_is_rejected ... ok
+test text_streaming_routes_cover_all_protocol_directions ... ok
+test upstream_error_message_is_truncated_to_512_chars ... ok
+test upstream_http_failure_relays_real_status ... ok
+test upstream_rejection_relays_error_message_to_client ... ok
+test runtime::tests::slow_client_read_times_out ... ok
+test zen_tool_stream_tail_relays_through_same_protocol_passthrough ... ok
+test runtime::tests::timeout_counts_as_failure_not_success ... ok
+test runtime::tests::connection_slots_blocks_acquire_over_capacity_until_release ... ok
+test runtime::tests::serve_processes_second_connection_while_first_is_stalled ... ok
+test upstream_timeout_returns_504 ... ok
+test runtime::tests::stream_survives_total_duration_beyond_provider_timeout_when_chunks_trickle ... ok
+test signed_thinking_request_to_chat_fails_closed_with_unsupported ... ok
+test unknown_model_fails_closed_with_400_before_any_upstream_request ... ok
+
+test result: ok. 318 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+   Doc-tests trivium
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+EXIT:0

@@ -236,15 +236,15 @@ pub fn mcp_form_title(form: &McpForm) -> &'static str {
     }
 }
 
-pub fn mcp_edit_form(server: &spec::mcp::McpServer) -> McpForm {
+pub fn mcp_edit_form(server: &trivium::mcp::McpServer) -> McpForm {
     McpForm {
         kind: McpFormKind::Edit,
         id: server.id.clone(),
         name: server.name.clone(),
         transport: match server.transport {
-            spec::mcp::McpTransport::Stdio => "stdio".to_string(),
-            spec::mcp::McpTransport::Http => "http".to_string(),
-            spec::mcp::McpTransport::Sse => "sse".to_string(),
+            trivium::mcp::McpTransport::Stdio => "stdio".to_string(),
+            trivium::mcp::McpTransport::Http => "http".to_string(),
+            trivium::mcp::McpTransport::Sse => "sse".to_string(),
         },
         command: server.command.clone().unwrap_or_default(),
         args: server.args.join(" "),

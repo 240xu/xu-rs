@@ -1389,14 +1389,14 @@ fn source_badge(source: &str) -> &'static str {
 // ─── 删除对话（委托 lib session_store，保证 CLI/TUI 一致硬删）───
 
 pub fn delete_session(session: &crate::config::SessionInfo) -> Result<(), String> {
-    let s = spec::session_store::SessionInfo {
+    let s = trivium::session_store::SessionInfo {
         source: session.source.clone(),
         id: session.id.clone(),
         file: session.file.clone(),
         title: session.title.clone(),
         time: session.time.clone(),
     };
-    spec::session_store::delete_session(&s)
+    trivium::session_store::delete_session(&s)
 }
 
 /// 批量删除多个对话。返回 (成功数, 失败数, 错误摘要)。
@@ -1405,7 +1405,7 @@ pub fn delete_sessions_batch(
 ) -> (usize, usize, Vec<String>) {
     let mapped: Vec<_> = sessions
         .iter()
-        .map(|session| spec::session_store::SessionInfo {
+        .map(|session| trivium::session_store::SessionInfo {
             source: session.source.clone(),
             id: session.id.clone(),
             file: session.file.clone(),
@@ -1413,7 +1413,7 @@ pub fn delete_sessions_batch(
             time: session.time.clone(),
         })
         .collect();
-    spec::session_store::delete_sessions_batch(&mapped)
+    trivium::session_store::delete_sessions_batch(&mapped)
 }
 
 /// 按来源批量删除：给定 filter 删所有匹配项。
@@ -1738,7 +1738,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        spec::session_store::delete_opencode_session(&db, "ses_del").unwrap();
+        trivium::session_store::delete_opencode_session(&db, "ses_del").unwrap();
 
         let conn = rusqlite::Connection::open(&db).unwrap();
         let count: i64 = conn

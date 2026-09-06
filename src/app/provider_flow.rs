@@ -2,7 +2,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::config;
 use crate::ProviderState;
-use spec::domain::ProviderProfile;
+use trivium::domain::ProviderProfile;
 
 pub fn start_provider_test(state: &ProviderState) -> Option<Receiver<String>> {
     let provider = state.providers.get(state.selected)?;
@@ -52,7 +52,7 @@ pub struct FormModelsFetchJob {
 
 /// 为编辑表单启动一次后台模型拉取：id 去空格后为空 → `None`；
 /// 否则在线程内执行 `provider fetch-models <id>` 并把结果发回通道。
-/// 只有 worker 闭包调用 `spec::cli::run_command()`，事件循环不阻塞。
+/// 只有 worker 闭包调用 `trivium::cli::run_command()`，事件循环不阻塞。
 pub fn start_form_models_fetch(provider_id: String, generation: u64) -> Option<FormModelsFetchJob> {
     let id = provider_id.trim();
     if id.is_empty() {
@@ -67,7 +67,7 @@ pub fn start_form_models_fetch(provider_id: String, generation: u64) -> Option<F
             "fetch-models".to_string(),
             id_for_worker,
         ];
-        let result = match spec::cli::run_command(&config::home(), &args) {
+        let result = match trivium::cli::run_command(&config::home(), &args) {
             Some(Ok(output)) => crate::app::provider_ops::parse_fetch_models_output(&output),
             Some(Err(error)) => Err(error),
             None => Err("provider fetch-models 命令不可用".to_string()),
@@ -90,8 +90,8 @@ pub fn provider_models_start_message() -> String {
 }
 
 pub fn test_provider(provider: ProviderProfile) -> String {
-    let result = spec::provider_check::test_provider_connection(&provider);
-    let cache_note = spec::state::set_provider_health(
+    let result = trivium::provider_check::test_provider_connection(&provider);
+    let cache_note = trivium::state::set_provider_health(
         &config::home(),
         &provider.id,
         &provider.api_key,
@@ -113,7 +113,7 @@ pub fn test_provider(provider: ProviderProfile) -> String {
 }
 
 pub fn fetch_provider_models_message(provider: ProviderProfile) -> String {
-    match spec::provider_check::fetch_provider_models(&provider) {
+    match trivium::provider_check::fetch_provider_models(&provider) {
         Ok(models) => {
             let preview = models
                 .iter()

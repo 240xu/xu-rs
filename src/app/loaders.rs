@@ -2,17 +2,17 @@ use std::collections::BTreeMap;
 
 use crate::config;
 use crate::ProviderState;
-use spec::agents::AgentTarget;
+use trivium::agents::AgentTarget;
 
-pub fn load_mcp_servers() -> (Vec<spec::mcp::McpServer>, Option<String>) {
-    match spec::mcp::read_store(&config::home()) {
+pub fn load_mcp_servers() -> (Vec<trivium::mcp::McpServer>, Option<String>) {
+    match trivium::mcp::read_store(&config::home()) {
         Ok(store) => (store.servers.into_values().collect(), None),
         Err(error) => (Vec::new(), Some(error)),
     }
 }
 
-pub fn load_skills() -> (Vec<spec::skills::SkillRecord>, Option<String>) {
-    match spec::skills::read_store(&config::home()) {
+pub fn load_skills() -> (Vec<trivium::skills::SkillRecord>, Option<String>) {
+    match trivium::skills::read_store(&config::home()) {
         Ok(store) => (store.skills.into_values().collect(), None),
         Err(error) => (Vec::new(), Some(error)),
     }
@@ -36,9 +36,9 @@ pub fn load_providers_with(prefer_selected: Option<ProviderState>) -> ProviderSt
             )
         })
         .unwrap_or((None, 0));
-    let mut base = match spec::providers::read_profiles(&path) {
+    let mut base = match trivium::providers::read_profiles(&path) {
         Ok(providers) => {
-            let state = spec::state::read_state(&config::home()).unwrap_or_default();
+            let state = trivium::state::read_state(&config::home()).unwrap_or_default();
             ProviderState {
                 providers,
                 error: None,
@@ -75,7 +75,7 @@ pub fn reload_providers_keep(state: &ProviderState) -> ProviderState {
 }
 
 pub fn run_skill_command(home: &std::path::Path, args: &[String]) -> String {
-    match spec::cli::run_command(home, args) {
+    match trivium::cli::run_command(home, args) {
         Some(Ok(output)) => output,
         Some(Err(error)) => format!("Skills 操作失败：{error}"),
         None => "Skills 命令不可用".to_string(),
@@ -83,14 +83,14 @@ pub fn run_skill_command(home: &std::path::Path, args: &[String]) -> String {
 }
 
 pub fn run_mcp_command(home: &std::path::Path, args: &[String]) -> String {
-    match spec::cli::run_command(home, args) {
+    match trivium::cli::run_command(home, args) {
         Some(Ok(output)) => output,
         Some(Err(error)) => format!("MCP 操作失败：{error}"),
         None => "MCP 命令不可用".to_string(),
     }
 }
 
-pub fn skill_toggle_args(skill: &spec::skills::SkillRecord, target: AgentTarget) -> Vec<String> {
+pub fn skill_toggle_args(skill: &trivium::skills::SkillRecord, target: AgentTarget) -> Vec<String> {
     vec![
         "skill".to_string(),
         if skill.targets.get(target) {
@@ -104,7 +104,7 @@ pub fn skill_toggle_args(skill: &spec::skills::SkillRecord, target: AgentTarget)
     ]
 }
 
-pub fn mcp_toggle_args(server: &spec::mcp::McpServer, target: AgentTarget) -> Vec<String> {
+pub fn mcp_toggle_args(server: &trivium::mcp::McpServer, target: AgentTarget) -> Vec<String> {
     vec![
         "mcp".to_string(),
         if server.targets.get(target) {
@@ -119,7 +119,7 @@ pub fn mcp_toggle_args(server: &spec::mcp::McpServer, target: AgentTarget) -> Ve
 }
 
 pub fn mcp_preset_args(index: usize) -> Vec<String> {
-    let Some(preset) = spec::mcp::MCP_PRESETS.get(index) else {
+    let Some(preset) = trivium::mcp::MCP_PRESETS.get(index) else {
         return Vec::new();
     };
     vec![

@@ -24,8 +24,8 @@ use crate::ui::widgets::chips::{
 use crate::ui::widgets::searchbox::render_search_box;
 use crate::ui::widgets::searchbox::SearchBox;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use spec::domain::{AgentTarget, ProtocolKind, ProviderProfile};
-use spec::state::ProviderHealth;
+use trivium::domain::{AgentTarget, ProtocolKind, ProviderProfile};
+use trivium::state::ProviderHealth;
 
 /// 供应商卡片高度（2 行内容 + 1 行呼吸空隙，无边框）。
 pub const PROVIDER_CARD_HEIGHT: u16 = 3;
@@ -706,7 +706,7 @@ mod tests {
             name: name.to_string(),
             notes: None,
             website: None,
-            vendor: spec::domain::ProviderVendor::OpenAi,
+            vendor: trivium::domain::ProviderVendor::OpenAi,
             protocol,
             base_url: "https://api.example.com/v1".to_string(),
             api_key: format!("sk-{id}"),

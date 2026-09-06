@@ -16,8 +16,8 @@ use crate::ui::screens::common::render_placeholder;
 use crate::ui::widgets::chips::ToggleRow;
 use crate::ui::widgets::chips::{point_in, toolbar_rects};
 
-use spec::domain::{AgentTarget, ProtocolKind, ProviderProfile};
-use spec::state::ProviderHealth;
+use trivium::domain::{AgentTarget, ProtocolKind, ProviderProfile};
+use trivium::state::ProviderHealth;
 
 use crate::ui::screens::providers::{ProviderDetailAction, ProviderMode};
 use crate::ui::theme;
@@ -1121,16 +1121,16 @@ pub fn action_chip_rects(section: Rect, count: usize) -> Vec<Rect> {
 }
 
 pub fn cache_mode_is_deepseek(provider: &ProviderProfile) -> bool {
-    matches!(provider.cache_mode, spec::domain::CacheMode::DeepSeek)
-        || (matches!(provider.cache_mode, spec::domain::CacheMode::Auto)
-            && matches!(provider.vendor, spec::domain::ProviderVendor::DeepSeek))
+    matches!(provider.cache_mode, trivium::domain::CacheMode::DeepSeek)
+        || (matches!(provider.cache_mode, trivium::domain::CacheMode::Auto)
+            && matches!(provider.vendor, trivium::domain::ProviderVendor::DeepSeek))
 }
 
 pub fn cache_mode_label(provider: &ProviderProfile) -> String {
     match provider.cache_mode {
-        spec::domain::CacheMode::Compat => "Compat".to_string(),
-        spec::domain::CacheMode::DeepSeek => "DeepSeek".to_string(),
-        spec::domain::CacheMode::Auto => {
+        trivium::domain::CacheMode::Compat => "Compat".to_string(),
+        trivium::domain::CacheMode::DeepSeek => "DeepSeek".to_string(),
+        trivium::domain::CacheMode::Auto => {
             if cache_mode_is_deepseek(provider) {
                 "DeepSeek（自动）".into()
             } else {

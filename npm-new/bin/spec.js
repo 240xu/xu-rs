@@ -4,10 +4,10 @@ const { spawnSync } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const { join, dirname } = require("node:path");
 
-const bin = join(dirname(__dirname), "vendor", "trivium");
+const bin = join(dirname(__dirname), "vendor", "xcc");
 if (!existsSync(bin)) {
   console.error(
-    "[trivium] platform binary missing. Re-run install: npm rebuild @240xu/trivium"
+    "[spec] platform binary missing. Re-run install: npm rebuild @240xu/xcc"
   );
   process.exit(1);
 }

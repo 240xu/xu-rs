@@ -1,5 +1,5 @@
 "use strict";
-// Post-unpack fetcher: downloads the prebuilt trivium binary for this platform
+// Post-unpack fetcher: downloads the prebuilt xcc binary for this platform
 // from GitHub Releases, verifies sha256, extracts it into ./vendor/.
 // Node builtins only. Needs a system `tar` for .tar.gz extraction.
 const { createWriteStream, existsSync, mkdirSync, chmodSync } = require("node:fs");
@@ -20,18 +20,18 @@ const BIN_VERSION = "0.1.0";
 
 // sha256 of the release tarballs, from dist/SHA256SUMS at release time.
 const CHECKSUMS = {
-  "trivium-0.1.0-android-aarch64.tar.gz":
-    "3e4a41efdffa7d28b84ef8b660f7b532c18e956e0dea7c17ab813f4504282038",
+  "xcc-0.1.0-android-aarch64.tar.gz":
+    "3179556659f7cee9a4140280a2e3a5e4e5c72c4697e7fecfd8a5d88816086f28",
 };
 
 // GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
-const ASSET_ID = "547284461";
+const ASSET_ID = "547039790";
 
 function assetForPlatform() {
   const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
   const arch = process.arch; // 'arm64', 'x64', ...
   if ((plat === "android" || plat === "linux") && arch === "arm64") {
-    return `trivium-${BIN_VERSION}-android-aarch64.tar.gz`;
+    return `xcc-${BIN_VERSION}-android-aarch64.tar.gz`;
   }
   return null;
 }
@@ -63,13 +63,13 @@ function download(url, dest, headers = {}) {
 async function main() {
   // Allow offline / pre-seeded installs (tests, vendored mirrors).
   if (process.env.XCC_SKIP_DOWNLOAD === "1") {
-    console.log("[trivium] XCC_SKIP_DOWNLOAD=1, skipping binary fetch.");
+    console.log("[xcc] XCC_SKIP_DOWNLOAD=1, skipping binary fetch.");
     return;
   }
   const asset = assetForPlatform();
   if (!asset) {
     console.error(
-      `[trivium] no prebuilt binary for ${process.platform}-${process.arch} in v${VERSION} yet. ` +
+      `[xcc] no prebuilt binary for ${process.platform}-${process.arch} in v${VERSION} yet. ` +
         `Build from source: https://github.com/${REPO} (cargo build --release). ` +
         `Currently shipped: android-aarch64 (Termux).`
     );
@@ -77,7 +77,7 @@ async function main() {
   }
   const expected = CHECKSUMS[asset];
   if (!expected || expected === "REPLACE_WITH_SHA256") {
-    console.error(`[trivium] no checksum recorded for ${asset}; refusing to install.`);
+    console.error(`[xcc] no checksum recorded for ${asset}; refusing to install.`);
     process.exit(1);
   }
   // Fetch via the API asset endpoint: it 302s to release-assets.githubusercontent.com.
@@ -85,24 +85,20 @@ async function main() {
   // unreachable from some networks (China/Termux) and would hard-fail the install.
   const url = `https://api.github.com/repos/${REPO}/releases/assets/${ASSET_ID}`;
   const tmp = join(tmpdir(), asset);
-  console.log(`[trivium] fetching ${asset} via GitHub API`);
+  console.log(`[xcc] fetching ${asset} via GitHub API`);
   await download(url, tmp, { Accept: "application/octet-stream" });
   const sum = createHash("sha256").update(require("node:fs").readFileSync(tmp)).digest("hex");
   if (sum !== expected) {
-    throw new Error(`[trivium] checksum mismatch for ${asset}: got ${sum}, want ${expected}`);
+    throw new Error(`[xcc] checksum mismatch for ${asset}: got ${sum}, want ${expected}`);
   }
   const vendor = join(__dirname, "vendor");
   mkdirSync(vendor, { recursive: true });
-  // Tarball layout: <name>/bin/{trivium,xcc,spec}. Extract binary + compat aliases.
-  const base = asset.replace(/\.tar\.gz$/, "");
-  execFileSync("tar", [
-    "-xzf", tmp, "-C", vendor, "--strip-components=2",
-    `${base}/bin/trivium`, `${base}/bin/xcc`, `${base}/bin/spec`,
-  ]);
-  for (const b of ["trivium", "xcc", "spec"]) {
-    chmodSync(join(vendor, b), 0o755);
-  }
-  console.log(`[trivium] installed ${asset} -> vendor/{trivium,xcc,spec}`);
+  // Tarball layout: <name>/xcc (+ README/LICENSE/...). Extract only the binary.
+  // Tarball layout: <name>/bin/xcc (+ README/LICENSE). Extract only the binary.
+  const member = `${asset.replace(/\.tar\.gz$/, "")}/bin/xcc`;
+  execFileSync("tar", ["-xzf", tmp, "-C", vendor, "--strip-components=2", member]);
+  chmodSync(join(vendor, "xcc"), 0o755);
+  console.log(`[xcc] installed ${asset} -> vendor/xcc`);
 }
 
 main().catch((e) => {

@@ -125,7 +125,7 @@ pub fn provider_preset_list_hit_test(area: Rect, selected: usize, m: &MouseEvent
     if !matches!(m.kind, MouseEventKind::Up(MouseButton::Left)) {
         return None;
     }
-    let presets = spec::provider_presets::all();
+    let presets = trivium::provider_presets::all();
     let content = Rect::new(
         area.x,
         area.y + 3,
@@ -138,7 +138,7 @@ pub fn provider_preset_list_hit_test(area: Rect, selected: usize, m: &MouseEvent
 }
 
 pub fn render_provider_preset_list(terminal: &mut Tui, selected: usize) -> io::Result<()> {
-    let presets = spec::provider_presets::all();
+    let presets = trivium::provider_presets::all();
     terminal.draw(|f| {
         let area = f.area();
         let chunks = Layout::default()

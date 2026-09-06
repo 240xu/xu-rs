@@ -2,9 +2,9 @@ use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use spec::adapters::{apply_agent, AgentTarget, ApplyPlan, RoutingMode};
-use spec::models::{ApiKind, CacheMode, ProviderProfile, ProviderVendor};
-use spec::patch::{apply_patch, restore_backup, PatchOptions};
+use trivium::adapters::{apply_agent, AgentTarget, ApplyPlan, RoutingMode};
+use trivium::models::{ApiKind, CacheMode, ProviderProfile, ProviderVendor};
+use trivium::patch::{apply_patch, restore_backup, PatchOptions};
 
 fn provider(id: &str, api_kind: ApiKind, model: &str) -> ProviderProfile {
     ProviderProfile {
@@ -235,7 +235,7 @@ fn claude_merge_preserves_user_settings_and_does_not_force_theme_or_auth_token()
     )
     .unwrap();
 
-    let plan = spec::agents::apply_agent(
+    let plan = trivium::agents::apply_agent(
         root.path(),
         AgentTarget::ClaudeCode,
         &[provider],
@@ -284,7 +284,7 @@ trust_level = "untrusted"
 "#,
     )
     .unwrap();
-    let plan = spec::agents::apply_agent(
+    let plan = trivium::agents::apply_agent(
         root.path(),
         AgentTarget::Codex,
         &[provider],
@@ -552,7 +552,7 @@ fn apply_patch_supports_dry_run_backup_and_restore() {
     let path = root.path().join("settings.json");
     fs::write(&path, "old").unwrap();
 
-    let patch = spec::patch::ConfigPatch::new(path.clone(), "old".to_string(), "new".to_string());
+    let patch = trivium::patch::ConfigPatch::new(path.clone(), "old".to_string(), "new".to_string());
     let dry = apply_patch(
         &patch,
         PatchOptions {
@@ -599,7 +599,7 @@ fn apply_patch_supports_dry_run_backup_and_restore() {
 fn patch_diff_masks_secrets() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("settings.json");
-    let patch = spec::patch::ConfigPatch::new(
+    let patch = trivium::patch::ConfigPatch::new(
         path,
         "{\n  \"apiKey\": \"old-secret\"\n}".to_string(),
         "{\n  \"apiKey\": \"new-secret\"\n}".to_string(),
@@ -632,14 +632,14 @@ fn apply_plan_rolls_back_already_written_files_on_failure() {
         routing_mode: RoutingMode::DirectFile,
         protocol_adapter: None,
         patches: vec![
-            spec::patch::ConfigPatch::new(first.clone(), "old".to_string(), "new".to_string()),
-            spec::patch::ConfigPatch::new(bad_target, "".to_string(), "boom".to_string()),
+            trivium::patch::ConfigPatch::new(first.clone(), "old".to_string(), "new".to_string()),
+            trivium::patch::ConfigPatch::new(bad_target, "".to_string(), "boom".to_string()),
         ],
         summary: Vec::new(),
         warnings: Vec::new(),
     };
 
-    let err = spec::cli::apply_plan(&plan, false).unwrap_err();
+    let err = trivium::cli::apply_plan(&plan, false).unwrap_err();
 
     assert!(!err.is_empty());
     assert_eq!(fs::read_to_string(&first).unwrap(), "old");

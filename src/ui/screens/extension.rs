@@ -13,7 +13,7 @@ use ratatui::widgets::Paragraph;
 use crate::ui::screens::chrome::{list_window_rects, right_align_line};
 use crate::ui::theme;
 use crate::ui::widgets::chips::{point_in, toolbar_rects, IconButton};
-use spec::domain::AgentTarget;
+use trivium::domain::AgentTarget;
 
 /// 卡片高度：2 行内容 + 1 行呼吸空隙（无边框，克制派）。
 pub const EXTENSION_CARD_HEIGHT: u16 = 3;

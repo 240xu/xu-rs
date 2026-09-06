@@ -1,5 +1,5 @@
 [package]
-name = "spec"
+name = "trivium"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal provider switcher for OpenCode, Claude Code, and Codex"
@@ -36,6 +36,10 @@ opt-level = 3
 lto = true
 strip = true
 
+[lib]
+name = "trivium"
+path = "src/lib.rs"
+
 [[bin]]
-name = "xcc"
+name = "trivium"
 path = "src/main.rs"

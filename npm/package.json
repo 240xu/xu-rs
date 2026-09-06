@@ -1,7 +1,7 @@
 {
-  "name": "@240xu/xcc",
-  "version": "0.1.3",
-  "description": "xcc-switch (spec) — three-protocol LLM router with dual-surface console (TUI + Web)",
+  "name": "@240xu/trivium",
+  "version": "0.1.0",
+  "description": "trivium — three-protocol LLM router (Anthropic Messages / OpenAI Chat / Responses) with dual-surface console (TUI + Web)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -9,6 +9,7 @@
   },
   "homepage": "https://github.com/240xu/xu-rs",
   "bin": {
+    "trivium": "./bin/trivium.js",
     "xcc": "./bin/xcc.js",
     "spec": "./bin/spec.js"
   },
@@ -22,5 +23,18 @@
   ],
   "engines": {
     "node": ">=18"
-  }
+  },
+  "keywords": [
+    "trivium",
+    "llm",
+    "router",
+    "opencode",
+    "claude-code",
+    "codex",
+    "provider",
+    "tui",
+    "protocol",
+    "anthropic",
+    "openai"
+  ]
 }
