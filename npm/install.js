@@ -16,7 +16,7 @@ const REPO = "240xu/xu-rs";
 // Update when cutting a new release (see scripts/package.sh dist/SHA256SUMS).
 const CHECKSUMS = {
   "xcc-0.1.0-android-aarch64.tar.gz":
-    "REPLACE_WITH_SHA256",
+    "2c4453c5561fd265b7ff097fcee9b57504f18b7bf9825db0f60bc361f73479de",
 };
 
 function assetForPlatform() {

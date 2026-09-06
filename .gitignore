@@ -1,3 +1,5 @@
 /target
 /dist
 *.xu.*.bak
+
+build-release.log
