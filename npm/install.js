@@ -1,0 +1,87 @@
+"use strict";
+// Post-unpack fetcher: downloads the prebuilt xcc binary for this platform
+// from GitHub Releases, verifies sha256, extracts it into ./vendor/.
+// Node builtins only. Needs a system `tar` for .tar.gz extraction.
+const { createWriteStream, existsSync, mkdirSync, chmodSync } = require("node:fs");
+const { get } = require("node:https");
+const { createHash } = require("node:crypto");
+const { execFileSync } = require("node:child_process");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
+
+const VERSION = require("./package.json").version;
+const REPO = "240xu/xu-rs";
+
+// sha256 of the release tarballs, filled at publish time.
+// Update when cutting a new release (see scripts/package.sh dist/SHA256SUMS).
+const CHECKSUMS = {
+  "xcc-0.1.0-android-aarch64.tar.gz":
+    "REPLACE_WITH_SHA256",
+};
+
+function assetForPlatform() {
+  const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
+  const arch = process.arch; // 'arm64', 'x64', ...
+  if ((plat === "android" || plat === "linux") && arch === "arm64") {
+    return `xcc-${VERSION}-android-aarch64.tar.gz`;
+  }
+  return null;
+}
+
+function download(url, dest) {
+  return new Promise((resolve, reject) => {
+    get(url, { headers: { "User-Agent": "xcc-npm-installer" } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return resolve(download(res.headers.location, dest));
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`download failed: HTTP ${res.statusCode} for ${url}`));
+      }
+      const out = createWriteStream(dest);
+      res.pipe(out);
+      out.on("finish", () => resolve());
+      out.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+async function main() {
+  // Allow offline / pre-seeded installs (tests, vendored mirrors).
+  if (process.env.XCC_SKIP_DOWNLOAD === "1") {
+    console.log("[xcc] XCC_SKIP_DOWNLOAD=1, skipping binary fetch.");
+    return;
+  }
+  const asset = assetForPlatform();
+  if (!asset) {
+    console.error(
+      `[xcc] no prebuilt binary for ${process.platform}-${process.arch} in v${VERSION} yet. ` +
+        `Build from source: https://github.com/${REPO} (cargo build --release). ` +
+        `Currently shipped: android-aarch64 (Termux).`
+    );
+    process.exit(1);
+  }
+  const expected = CHECKSUMS[asset];
+  if (!expected || expected === "REPLACE_WITH_SHA256") {
+    console.error(`[xcc] no checksum recorded for ${asset}; refusing to install.`);
+    process.exit(1);
+  }
+  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
+  const tmp = join(tmpdir(), asset);
+  console.log(`[xcc] fetching ${url}`);
+  await download(url, tmp);
+  const sum = createHash("sha256").update(require("node:fs").readFileSync(tmp)).digest("hex");
+  if (sum !== expected) {
+    throw new Error(`[xcc] checksum mismatch for ${asset}: got ${sum}, want ${expected}`);
+  }
+  const vendor = join(__dirname, "vendor");
+  mkdirSync(vendor, { recursive: true });
+  // Tarball layout: <name>/xcc (+ README/LICENSE/...). Extract only the binary.
+  execFileSync("tar", ["-xzf", tmp, "-C", vendor, "--strip-components=1", `${asset.replace(/\.tar\.gz$/, "")}/xcc`]);
+  chmodSync(join(vendor, "xcc"), 0o755);
+  console.log(`[xcc] installed ${asset} -> vendor/xcc`);
+}
+
+main().catch((e) => {
+  console.error(e.message || e);
+  process.exit(1);
+});

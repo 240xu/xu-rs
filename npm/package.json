@@ -1,0 +1,26 @@
+{
+  "name": "@240xu/xcc",
+  "version": "0.1.0",
+  "description": "xcc-switch (spec) — three-protocol LLM router with dual-surface console (TUI + Web)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/240xu/xu-rs.git"
+  },
+  "homepage": "https://github.com/240xu/xu-rs",
+  "bin": {
+    "xcc": "./bin/xcc.js",
+    "spec": "./bin/spec.js"
+  },
+  "scripts": {
+    "install": "node ./install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
