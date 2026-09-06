@@ -4,3 +4,7 @@
 
 build-release.log
 build.log
+
+*.log
+npm-new/
+dist/
