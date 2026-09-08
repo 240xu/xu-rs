@@ -118,7 +118,26 @@ async function main() {
   for (const b of ["trivium", "xcc", "spec"]) {
     chmodSync(join(vendor, b), 0o755);
   }
+  fixBinShebangs();
   console.log(`[trivium] installed ${asset} -> vendor/{trivium,xcc,spec}`);
+}
+
+// Termux/bionic has no /usr/bin/env; termux-exec's LD_PRELOAD normally covers
+// the npm bin shims, but shells without it (daemons, other sandboxes) get
+// "bad interpreter: No such file or directory". Rewrite to the absolute node
+// path on Android so the entry points always work.
+function fixBinShebangs() {
+  if (process.platform !== "android") return;
+  const node = process.execPath;
+  for (const b of ["trivium.js", "xcc.js", "spec.js"]) {
+    const p = join(__dirname, "bin", b);
+    try {
+      const src = require("node:fs").readFileSync(p, "utf8");
+      if (src.startsWith("#!/usr/bin/env")) {
+        require("node:fs").writeFileSync(p, src.replace(/^#!.*\n/, `#!${node}\n`));
+      }
+    } catch {}
+  }
 }
 
 main().catch((e) => {
