@@ -256,7 +256,7 @@ pub fn install_plan_text(tools: &[AgentTool]) -> String {
             }
             AgentToolId::Dsh => {
                 out.push_str(
-                    "依赖检查 → 查询版本 → 已最新则跳过 → --ignore-scripts 安装 → shebang/九件套 Termux 补丁 → 检测",
+                    "依赖检查 → 查询版本 → 版本相同仅补跑补丁链 → --ignore-scripts 安装 → shebang/Termux 兼容补丁链 → 检测",
                 );
             }
         }
@@ -551,58 +551,45 @@ fn install_dsh(home: &Path) -> Result<String, String> {
             None
         }
     };
+    // 版本相同时不再整体跳过：npm 安装可跳，但补丁链必须补跑（补丁幂等，
+    // 否则裸 npm 装完的 dsh 永远缺 Termux 兼容补丁）。
+    let mut skip_npm = false;
     if !force {
         if let (Some(current), Some(target)) = (old_version.as_deref(), target_version.as_deref()) {
             if current == target {
                 log.push_str(&format!(
-                    "[4/8] 已是最新 {current}，跳过安装（需要强制重装可加 --force）\n"
+                    "[4/8] 已是最新 {current}，跳过 npm 安装，仍补跑补丁链（--force 可强制重装）\n"
                 ));
-                log.push_str("== DeepSeek Harness 完成：已是最新 ==\n");
-                return Ok(log);
+                skip_npm = true;
             }
         }
     } else {
         log.push_str("[4/8] 强制重装模式已开启\n");
     }
 
-    let install_spec = match &target_version {
-        Some(version) => format!("@deepseek-ai/dsh@{version}"),
-        None => "@deepseek-ai/dsh@latest".to_string(),
-    };
-
-    log.push_str(&format!(
-        "[5/8] npm install -g --ignore-scripts {install_spec}...\n"
-    ));
-    log.push_str("      （--ignore-scripts：koffi 无 bionic 预编译、node-pty 需 NDK，两者 install 脚本必失败）\n");
-    if let Err(error) = run_inherited(
-        "npm",
-        &["install", "-g", "--ignore-scripts", &install_spec],
-        600,
-    ) {
-        return Err(format!("{log}[5/8] npm 安装失败：{error}"));
-    }
-
-    log.push_str("[6/8] shebang 修复（Termux 无 /usr/bin/env）...\n");
-    let bin_js = prefix().join("lib/node_modules/@deepseek-ai/dsh/lib/bin.js");
-    if !bin_js.exists() {
-        return Err(format!("{log}[6/8] 未找到 {}", bin_js.display()));
-    }
-    let content = fs::read_to_string(&bin_js).map_err(|e| e.to_string())?;
-    if content.starts_with("#!/data/data/com.termux/files/usr/bin/node --expose-internals") {
-        log.push_str("[6/8] shebang 已就绪\n");
+    if skip_npm {
+        log.push_str("[6/8] shebang 修复（Termux 无 /usr/bin/env）...\n");
+        ensure_dsh_shebang(&mut log)?;
     } else {
-        let (_, rest) = content.split_once('\n').unwrap_or((&content, ""));
-        let fixed =
-            "#!/data/data/com.termux/files/usr/bin/node --expose-internals\n".to_string() + rest;
-        atomic_write(&bin_js, fixed.as_bytes()).map_err(|e| e.to_string())?;
-        // atomic_write 落盘为 600，bin.js 需要可执行位
-        let mut perms = fs::metadata(&bin_js)
-            .map_err(|e| e.to_string())?
-            .permissions();
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin_js, perms).map_err(|e| e.to_string())?;
-        log.push_str("[6/8] shebang 已写入 --expose-internals\n");
+        let install_spec = match &target_version {
+            Some(version) => format!("@deepseek-ai/dsh@{version}"),
+            None => "@deepseek-ai/dsh@latest".to_string(),
+        };
+
+        log.push_str(&format!(
+            "[5/8] npm install -g --ignore-scripts {install_spec}...\n"
+        ));
+        log.push_str("      （--ignore-scripts：koffi 无 bionic 预编译、node-pty 需 NDK，两者 install 脚本必失败）\n");
+        if let Err(error) = run_inherited(
+            "npm",
+            &["install", "-g", "--ignore-scripts", &install_spec],
+            600,
+        ) {
+            return Err(format!("{log}[5/8] npm 安装失败：{error}"));
+        }
+
+        log.push_str("[6/8] shebang 修复（Termux 无 /usr/bin/env）...\n");
+        ensure_dsh_shebang(&mut log)?;
     }
 
     log.push_str("[7/8] 物化 profile bundles（首次需下载，koffi 报错属预期）...\n");
@@ -630,10 +617,18 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     }
 
     log.push_str("[8/8] 应用 Termux 兼容补丁...\n");
-    patch_permission_presets(home)?;
     patch_session_persistence(home)?;
     patch_node_gyp()?;
-    rebuild_node_pty()?;
+    rebuild_native_module(
+        prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty"),
+        "build/Release/pty.node",
+        "node-pty",
+    )?;
+    rebuild_native_module(
+        prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/fs-ext"),
+        "build/Release/fs_ext.node",
+        "fs-ext",
+    )?;
     patch_attachment_local(home)?;
     ensure_profile_patches(home)?;
     patch_subprocess_local()?;
@@ -665,25 +660,36 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     Ok(log)
 }
 
+fn ensure_dsh_shebang(log: &mut String) -> Result<(), String> {
+    let bin_js = prefix().join("lib/node_modules/@deepseek-ai/dsh/lib/bin.js");
+    if !bin_js.exists() {
+        return Err(format!("[6/8] 未找到 {}", bin_js.display()));
+    }
+    let content = fs::read_to_string(&bin_js).map_err(|e| e.to_string())?;
+    if content.starts_with("#!/data/data/com.termux/files/usr/bin/node --expose-internals") {
+        log.push_str("[6/8] shebang 已就绪\n");
+        return Ok(());
+    }
+    let (_, rest) = content.split_once('\n').unwrap_or((&content, ""));
+    let fixed = "#!/data/data/com.termux/files/usr/bin/node --expose-internals\n".to_string() + rest;
+    atomic_write(&bin_js, fixed.as_bytes()).map_err(|e| e.to_string())?;
+    // atomic_write 落盘为 600，bin.js 需要可执行位
+    let mut perms = fs::metadata(&bin_js)
+        .map_err(|e| e.to_string())?
+        .permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    fs::set_permissions(&bin_js, perms).map_err(|e| e.to_string())?;
+    log.push_str("[6/8] shebang 已写入 --expose-internals\n");
+    Ok(())
+}
+
 fn dsh_tool() -> AgentTool {
     tool_by_key("dsh").expect("dsh in AGENT_TOOLS")
 }
 
 fn profiles_node_modules(home: &Path) -> PathBuf {
     home.join(".dsh/profiles/node_modules/@deepseek-ai")
-}
-
-fn patch_permission_presets(home: &Path) -> Result<(), String> {
-    let path = profiles_node_modules(home).join("dsh-permission-presets/lib/index.js");
-    let content = fs::read_to_string(&path).map_err(|e| format!("permission-presets 缺失：{e}"))?;
-    if content.contains("sandboxMode === false") {
-        return Ok(());
-    }
-    let fixed = content.replace("sandboxMode === void 0", "sandboxMode === false");
-    if fixed == content {
-        return Err("permission-presets 标记未找到（dsh 内部变更？）".to_string());
-    }
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn patch_session_persistence(home: &Path) -> Result<(), String> {
@@ -693,17 +699,31 @@ fn patch_session_persistence(home: &Path) -> Result<(), String> {
     if content.contains("error.code === \"EACCES\"") {
         return Ok(());
     }
-    let imp_old = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";";
-    let imp_new = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";";
-    let link_old = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
-    let link_new = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
-    if !content.contains(imp_old) || !content.contains(link_old) {
-        return Err("session-persistence 标记未找到（dsh 内部变更？）".to_string());
+    // link 失败（Android 上 /data 与 /sdcard 等跨设备/权限场景）时 rename 兜底。
+    // 三代上游形态：0.1.2（无 lstat import + 裸 link）、0.1.3（含 lstat import +
+    // try/finally 包裹）。
+    let imp_old_v1 = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";";
+    let imp_new_v1 = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";";
+    let link_old_v1 = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
+    let link_new_v1 = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
+    let imp_old_v2 = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";";
+    let imp_new_v2 = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";";
+    let link_old_v2 = "\t\ttry {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t} finally {";
+    let link_new_v2 = "\t\ttry {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t} catch (error) {\n\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} else throw error;\n\t\t} finally {";
+    let variants: [(&str, &str, &str, &str); 2] = [
+        (imp_old_v1, imp_new_v1, link_old_v1, link_new_v1),
+        (imp_old_v2, imp_new_v2, link_old_v2, link_new_v2),
+    ];
+    for (imp_old, imp_new, link_old, link_new) in variants {
+        if content.contains(imp_old) && content.contains(link_old) {
+            let fixed = content
+                .replace(imp_old, imp_new)
+                .replace(link_old, link_new);
+            atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
     }
-    let fixed = content
-        .replace(imp_old, imp_new)
-        .replace(link_old, link_new);
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    Err("session-persistence 标记未找到（dsh 内部变更？）".to_string())
 }
 
 fn patch_node_gyp() -> Result<(), String> {
@@ -723,10 +743,12 @@ fn patch_node_gyp() -> Result<(), String> {
     atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
 }
 
-fn rebuild_node_pty() -> Result<(), String> {
-    let dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty");
-    if dir.join("build/Release/pty.node").exists() {
+fn rebuild_native_module(dir: PathBuf, built: &str, label: &str) -> Result<(), String> {
+    if dir.join(built).exists() {
         return Ok(());
+    }
+    if !dir.exists() {
+        return Err(format!("{label} 缺失（dsh 未安装？）：{}", dir.display()));
     }
     let gyp = prefix().join("lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js");
     let status = Command::new("node")
@@ -736,11 +758,11 @@ fn rebuild_node_pty() -> Result<(), String> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .map_err(|e| format!("node-pty rebuild 启动失败：{e}"))?;
+        .map_err(|e| format!("{label} rebuild 启动失败：{e}"))?;
     if !status.success() {
-        return Err(
-            "node-pty rebuild 失败（需要 clang/make：pkg install -y clang make）".to_string(),
-        );
+        return Err(format!(
+            "{label} rebuild 失败（需要 clang/make：pkg install -y clang make）"
+        ));
     }
     Ok(())
 }
@@ -806,24 +828,45 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
 }
 
 fn patch_subprocess_local() -> Result<(), String> {
-    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js");
-    if !path.exists() {
-        return Err("subprocess-local 缺失（dsh 未安装？）".to_string());
+    // 0.1.2：锚点在 index.js；0.1.3+：移入 runner-launch-<hash>.js chunk
+    //（文件名带内容 hash，需 glob 匹配）。
+    let lib_dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-subprocess-local/lib");
+    let mut paths = vec![lib_dir.join("index.js")];
+    if let Ok(rd) = fs::read_dir(&lib_dir) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("runner-launch-") && name.ends_with(".js") {
+                paths.push(entry.path());
+            }
+        }
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("subprocess-local 读取失败：{e}"))?;
-    if content.contains("android) return new LinuxProcessInspector") {
-        return Ok(());
-    }
+    let marker = "platform === \"android\") return new LinuxProcessInspector";
     let old = "if (platform === \"linux\") return new LinuxProcessInspector(arch, internals);";
-    if !content.contains(old) {
+    let new = "if (platform === \"linux\" || platform === \"android\") return new LinuxProcessInspector(arch, internals);";
+    let mut patched = 0usize;
+    let mut missing = 0usize;
+    for path in &paths {
+        if !path.exists() {
+            missing += 1;
+            continue;
+        }
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        if content.contains(marker) {
+            patched += 1;
+            continue;
+        }
+        if !content.contains(old) {
+            // 该形态里没有这个锚点（可能是另一个上游世代），跳过。
+            continue;
+        }
+        atomic_write(path, content.replace(old, new).as_bytes()).map_err(|e| e.to_string())?;
+        patched += 1;
+    }
+    if patched == 0 {
         return Err("subprocess-local 标记未找到（dsh 内部变更？）".to_string());
     }
-    let fixed = content.replace(
-        old,
-        "if (platform === \"linux\" || platform === \"android\") return new LinuxProcessInspector(arch, internals);",
-    );
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    let _ = missing;
+    Ok(())
 }
 
 fn patch_fs_search() -> Result<(), String> {
@@ -853,7 +896,8 @@ fn patch_fs_search() -> Result<(), String> {
         }
         let content = fs::read_to_string(&path)
             .map_err(|e| format!("dsh-tool-fs-search 读取失败 {}：{e}", path.display()))?;
-        if content.contains("android-arm64") {
+        // 幂等标记用补丁后代码里的 execFileSync 兜底调用，不依赖注释文本。
+        if content.contains("execFileSync(\"rg\", [\"--version\"]") {
             patched += 1;
             continue;
         }
@@ -959,9 +1003,16 @@ fn ensure_profile_patches(home: &Path) -> Result<(), String> {
                 "\n# Termux (bionic) fix: dsh-sandbox-local requires the koffi native FFI\n# module, which has no bionic prebuild. Swap in the unsandboxed local bash\n# executor (dsh-bash-local) so the profile boots without native code.\n# Commands run without OS-level sandbox (no bwrap on Termux anyway).\n- id: sandbox\n  name: '@deepseek-ai/dsh-sandbox-local'\n  disabled: true\n\n- id: bash-sandbox\n  name: '@deepseek-ai/dsh-bash-sandbox'\n  disabled: true\n\n- insert:\n    - id: bash-local\n      name: '@deepseek-ai/dsh-bash-local'\n      config:\n        timeoutMs: 60000\n",
             );
         }
-        if !content.contains("defaultPreset: workspace-write") {
+        // dsh 0.1.3+：dsh-permission-presets 在未沙箱（bash-local）执行器上会
+        // 抛错（"the mounted bash executor does not confine" / "match no
+        // preset"），且旧版补丁写入的 presets 块已被上游语义反转。整体禁用。
+        let legacy_permission_block = "\n- id: permission\n  name: '@deepseek-ai/dsh-permission-presets'\n  config:\n    defaultPreset: workspace-write\n    presets:\n      read-only:\n        sandbox: read-only\n        approval: ask\n      workspace-write:\n        sandbox: workspace-write\n        approval: ask\n      danger-full-access:\n        sandbox: danger-full-access\n        approval: never\n";
+        if content.contains(legacy_permission_block) {
+            content = content.replace(legacy_permission_block, "");
+        }
+        if !content.contains("id: permission") {
             content.push_str(
-                "\n- id: permission\n  name: '@deepseek-ai/dsh-permission-presets'\n  config:\n    defaultPreset: workspace-write\n    presets:\n      read-only:\n        sandbox: read-only\n        approval: ask\n      workspace-write:\n        sandbox: workspace-write\n        approval: ask\n      danger-full-access:\n        sandbox: danger-full-access\n        approval: never\n",
+                "\n# dsh 0.1.3+: permission-presets throws over an unconfined (bash-local)\n# executor; disable the bundle entry entirely.\n- id: permission\n  disabled: true\n",
             );
         }
         atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
