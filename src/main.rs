@@ -3241,14 +3241,29 @@ fn main() {
                     need_redraw = true;
                 }
                 ClientOutcome::RunInstall { statuses, index } => {
-                    let _ = tui::restore();
-                    run_agent_install_from_tui(&statuses, index);
-                    return;
+                    // 安装在 TUI 内完成：busy 屏等待，结果写入 Agent 页 hint，
+                    // 不再退出整个应用（旧行为：退出 TUI 落回裸终端打印日志）。
+                    let label = statuses
+                        .get(index)
+                        .map(|row| format!("正在安装/更新 {}…", row.tool.label))
+                        .unwrap_or_else(|| "正在安装/更新…".to_string());
+                    let (message, _elapsed) =
+                        run_with_busy(&mut terminal, &label, || {
+                            agent_install_summary(&statuses, index)
+                        });
+                    agent_status_message = message;
+                    mode = Mode::Client;
+                    need_redraw = true;
                 }
                 ClientOutcome::RunSetup => {
-                    let _ = tui::restore();
-                    run_all_agent_install_from_tui();
-                    return;
+                    let (message, _elapsed) = run_with_busy(
+                        &mut terminal,
+                        "正在执行全部客户端安装/更新…",
+                        agent_setup_summary,
+                    );
+                    agent_status_message = message;
+                    mode = Mode::Client;
+                    need_redraw = true;
                 }
             },
 
