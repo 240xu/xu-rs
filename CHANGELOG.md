@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- dsh 0.1.3-alpha.2 适配：session-persistence 补丁支持新 import/try-finally 形态；subprocess-local 锚点迁到 runner-launch-*.js chunk；node-pty 与 fs-ext 统一原生模块重建。
+- 修复两个幂等 marker bug：subprocess-local（缺引号导致重跑误报"标记未找到"）、fs-search（marker 改为依赖补丁代码而非注释文本）。
+- 版本相同时不再整体跳过：跳过 npm 安装但仍幂等补跑整条补丁链（裸 npm 安装后重跑 install 即可补齐补丁）。
+- dsh 0.1.3+ 语义适配：permission-presets 在未沙箱执行器上会抛错，profile patch 层改为禁用 permission entry，并迁移旧版写入的 presets 块。
+- TUI Agent 页安装/更新不再退出整个应用：busy 屏等待后回到 Agent 页并在 hint 行显示结果摘要。
+
 ## 0.1.0
 
 - Initial Rust implementation.
