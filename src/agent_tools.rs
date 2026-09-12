@@ -998,7 +998,8 @@ dsh-url() {{
 dsh() {{
   if [ "$1" = "web" ] && curl -s -o /dev/null -m 2 http://127.0.0.1:3080/ 2>/dev/null; then
     local pid
-    pid=$(pgrep -f '[d]sh (--profile[ =]web|web)( |$)' | head -1)
+    # PID 只做展示：锚定真实二进制路径，避免匹配到调用者自己的命令行。
+    pid=$(pgrep -f '/usr/bin/dsh (--profile[ =]web|web)( |$)' | head -1)
     echo "[dsh] web 已在运行${{pid:+ (PID $pid)}}，不再起新进程；取链接: dsh-url"
     return 0
   fi
@@ -1869,6 +1870,10 @@ mod tests {
         assert!(
             content.contains("不再起新进程") && content.contains("command dsh \"$@\""),
             "应安装防重守卫（占端口只提示，其它透传）"
+        );
+        assert!(
+            content.contains("/usr/bin/dsh (--profile"),
+            "守卫 PID 查找应锚定真实二进制路径（防自匹配）"
         );
         assert!(
             !content.contains("setsid nohup"),
