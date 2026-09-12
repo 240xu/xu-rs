@@ -717,6 +717,16 @@ fn patch_session_persistence(home: &Path) -> Result<(), String> {
         }
         content = content.replace(flock_old, flock_new);
     }
+    if !content.contains("rename(staged, currentPath)") {
+        // Termux/bionic (2026-09-12): migration 发布用的硬链接在此文件系统上
+        // 报 EACCES；同目录 rename 原子且调用方容忍 staged 已消失。
+        let pub_old = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\tthrow error;";
+        let pub_new = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\t// Termux/bionic (2026-09-12): 硬链接 EACCES 则 rename 发布。\n\t\tif (error?.code === \"EACCES\" || error?.code === \"EPERM\" || error?.code === \"ENOSYS\") {\n\t\t\tawait rename(staged, currentPath);\n\t\t} else throw error;";
+        if !content.contains(pub_old) {
+            return Err("session-persistence publish 标记未找到（dsh 内部变更？）".to_string());
+        }
+        content = content.replace(pub_old, pub_new);
+    }
     atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
@@ -1899,8 +1909,9 @@ mod tests {
             ".dsh/profiles/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
         );
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // 0.1.5 形态 fixture：import 含 lstat、无 rename；link 裸调用；flock 无降级。
-        let fixture = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";\nasync function acquire() {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t\ttry {\n\t\t\t\tawait tryLockExclusive(handle.fd);\n\t\t\t} catch (error) {\n\t\t\t\tif (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;\n\t\t\t}\n}\n";
+        // 0.1.5 形态 fixture：import 含 lstat、无 rename；link 裸调用；flock 无降级；
+        // publish 用硬链接直发。
+        let fixture = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";\nasync function acquire() {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t\ttry {\n\t\t\t\tawait tryLockExclusive(handle.fd);\n\t\t\t} catch (error) {\n\t\t\t\tif (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;\n\t\t\t}\n}\nasync function publishCurrentExclusive(staged, currentPath, internals) {\n\ttry {\n\t\tawait internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\tthrow error;\n\t}\n}\n";
         fs::write(&path, fixture).unwrap();
 
         patch_session_persistence(home).unwrap();
@@ -1911,6 +1922,10 @@ mod tests {
             "link 回退应写入"
         );
         assert!(once.contains("posix-unlocked"), "flock 降级应写入");
+        assert!(
+            once.contains("rename(staged, currentPath)"),
+            "publish 回退应写入"
+        );
 
         patch_session_persistence(home).unwrap();
         let twice = fs::read_to_string(&path).unwrap();
