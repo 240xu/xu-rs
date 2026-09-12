@@ -993,6 +993,24 @@ fn patch_dsh_web_wrapper(home: &Path) -> Result<(), String> {
 dsh-url() {{
   grep '^dsh web: http://127.0.0.1:3080/' ~/dsh-web-restart.log 2>/dev/null | tail -1 | sed 's/^dsh web: //;s/[[:space:]]*$//'
 }}
+# dsh-open：一键用浏览器打开最新链接（手机上复制长 token 太痛苦）
+dsh-open() {{
+  local url
+  url=$(dsh-url)
+  if [ -z "$url" ]; then
+    echo '[dsh] 暂无链接：先确认服务在跑'
+    return 1
+  fi
+  if command -v termux-open-url >/dev/null 2>&1; then
+    termux-open-url "$url"
+  elif command -v termux-open >/dev/null 2>&1; then
+    termux-open "$url"
+  elif command -v am >/dev/null 2>&1; then
+    am start -a android.intent.action.VIEW -d "$url"
+  else
+    echo "$url"
+  fi
+}}
 # dsh 防重守卫：`dsh web` 在 3080 已被占用时只提示，不再起新进程。
 # 执意再起一个：command dsh web --port <其它端口>
 dsh() {{
@@ -1864,6 +1882,10 @@ mod tests {
         );
         assert!(content.contains("dsh-url() {"), "只应安装 dsh-url helper");
         assert!(
+            content.contains("dsh-open() {") && content.contains("termux-open-url"),
+            "应安装 dsh-open 一键跳转"
+        );
+        assert!(
             content.contains("grep '^dsh web: http://127.0.0.1:3080/'"),
             "helper 应从重启日志取最新 token 链接"
         );
@@ -1897,6 +1919,11 @@ mod tests {
             twice.matches("dsh-url() {").count(),
             1,
             "helper 有且仅有一份"
+        );
+        assert_eq!(
+            twice.matches("dsh-open() {").count(),
+            1,
+            "dsh-open 有且仅有一份"
         );
     }
 
