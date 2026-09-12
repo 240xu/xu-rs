@@ -743,20 +743,60 @@ fn rebuild_node_pty() -> Result<(), String> {
         return Ok(());
     }
     let gyp = prefix().join("lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js");
-    let status = Command::new("node")
+    let built = Command::new("node")
         .arg(&gyp)
         .arg("rebuild")
         .current_dir(&dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .map_err(|e| format!("node-pty rebuild 启动失败：{e}"))?;
-    if !status.success() {
-        return Err(
-            "node-pty rebuild 失败（需要 clang/make：pkg install -y clang make）".to_string(),
-        );
+        .map(|s| s.success())
+        .unwrap_or(false)
+        && dir.join("build/Release/pty.node").exists();
+    if built {
+        return Ok(());
     }
-    Ok(())
+    // Fallback (verified 2026-09-12: clang build works when headers exist,
+    // but header-less/NDK-less environments fail): import-time stub so
+    // dependent loader entries initialize; actual pty use throws a clear
+    // capability error instead of crashing the boot.
+    write_pty_stub(&dir.join("lib/index.js"))
+}
+
+/// Overwrite node-pty's entry with an import-safe stub (see rebuild_node_pty).
+/// Idempotent: files already carrying the stub header are left alone; the
+/// previous content is kept in `<file>.bak-termux-stub` (overwritten).
+fn write_pty_stub(path: &Path) -> Result<(), String> {
+    const HEADER: &str = "Termux/bionic stub";
+    const STUB: &str = r#""use strict";
+/* Termux/bionic stub (local-only): node-pty ships no android-arm64 prebuild
+ * and this machine cannot build one, so the real ./utils -> unixTerminal ->
+ * pty.node chain cannot load. This stub keeps the module IMPORTABLE so
+ * dependent loader entries (dsh-subprocess-local) initialize and provide
+ * their services; actual pty use throws a clear capability error instead
+ * of crashing the boot. Restore by reinstalling node-pty.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+function unavailable(name) {
+    throw new Error("node-pty." + name + " unavailable on Termux/bionic: no android-arm64 prebuild (see stub header)");
+}
+exports.native = undefined;
+function spawn() { unavailable("spawn"); }
+function fork() { unavailable("fork"); }
+function createTerminal() { unavailable("createTerminal"); }
+function open() { unavailable("open"); }
+exports.spawn = spawn;
+exports.fork = fork;
+exports.createTerminal = createTerminal;
+exports.open = open;
+"#;
+    let content = fs::read_to_string(path).map_err(|e| format!("node-pty 读取失败：{e}"))?;
+    if content.contains(HEADER) {
+        return Ok(());
+    }
+    let backup = path.with_extension("js.bak-termux-stub");
+    fs::copy(path, &backup).map_err(|e| format!("node-pty 备份失败：{e}"))?;
+    atomic_write(path, STUB.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn patch_attachment_local(home: &Path) -> Result<(), String> {
@@ -831,6 +871,11 @@ fn patch_subprocess_local() -> Result<(), String> {
     }
     let old = "if (platform === \"linux\") return new LinuxProcessInspector(arch, internals);";
     if !content.contains(old) {
+        // 0.1.5+: containment falls back with a warning on unknown platforms
+        // (selectContainmentMode); no patch needed on android.
+        if content.contains("selectContainmentMode") {
+            return Ok(());
+        }
         return Err("subprocess-local 标记未找到（dsh 内部变更？）".to_string());
     }
     let fixed = content.replace(
@@ -985,6 +1030,15 @@ fn ensure_profile_patches(home: &Path) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
+        // Remove pre-2026-09-12 stale rows (they fatal the boot gate: a bare
+        // bash-local wins ctx.shell without sandboxMode; a disabled
+        // bash-sandbox removes its only provider).
+        for stale in [
+            "- id: bash-sandbox\n  name: '@deepseek-ai/dsh-bash-sandbox'\n  disabled: true\n",
+            "- insert:\n    - id: bash-local\n      name: '@deepseek-ai/dsh-bash-local'\n      config:\n        timeoutMs: 60000\n",
+        ] {
+            content = content.replace(stale, "");
+        }
         if !content.contains("dsh-sandbox-local") {
             content.push_str(
                 "\n# Termux (bionic) fix (2026-09-12): dsh-sandbox-local needs real OS\n# sandboxing (unavailable on Termux); keep it disabled. Do NOT add a bare\n# dsh-bash-local row and do NOT disable dsh-bash-sandbox: the stock policy\n# wrapper provides ctx.shell.sandboxMode, which dsh-permission-presets\n# requires unconditionally (else the boot gate fatals). Enforcement below\n# the wrapper is nominal on Termux; approval semantics are unaffected.\n- id: sandbox\n  name: '@deepseek-ai/dsh-sandbox-local'\n  disabled: true\n",
@@ -1861,6 +1915,70 @@ mod tests {
         patch_session_persistence(home).unwrap();
         let twice = fs::read_to_string(&path).unwrap();
         assert_eq!(once, twice, "重复打补丁不应改变文件");
+    }
+
+    #[test]
+    fn profile_patches_converge_stale_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // 旧模板形态：禁 bash-sandbox + 插 bare bash-local（会 fatal 启动门）。
+        let stale = "# old\n- id: bash-sandbox\n  name: '@deepseek-ai/dsh-bash-sandbox'\n  disabled: true\n\n- insert:\n    - id: bash-local\n      name: '@deepseek-ai/dsh-bash-local'\n      config:\n        timeoutMs: 60000\n";
+        for profile in ["web", "headless"] {
+            let path = home.join(format!(".dsh/profiles/{profile}/cordis.patch.yml"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, stale).unwrap();
+        }
+
+        ensure_profile_patches(home).unwrap();
+
+        for profile in ["web", "headless"] {
+            let path = home.join(format!(".dsh/profiles/{profile}/cordis.patch.yml"));
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(
+                !content.contains("- id: bash-local"),
+                "{profile} 旧 bare bash-local 行应被清除"
+            );
+            assert!(
+                !content.contains("name: '@deepseek-ai/dsh-bash-sandbox'\n  disabled: true"),
+                "{profile} 不应再禁用 bash-sandbox"
+            );
+            assert!(
+                content.contains("dsh-sandbox-local"),
+                "{profile} 应保留 sandbox-local 禁用"
+            );
+        }
+
+        ensure_profile_patches(home).unwrap();
+        let again = fs::read_to_string(home.join(".dsh/profiles/web/cordis.patch.yml")).unwrap();
+        assert!(
+            again.matches("dsh-sandbox-local").count() >= 1,
+            "重复运行不应重复追加"
+        );
+    }
+
+    #[test]
+    fn pty_stub_writes_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.js");
+        fs::write(
+            &path,
+            "\"use strict\";\nvar utils_1 = require(\"./utils\");\n",
+        )
+        .unwrap();
+
+        write_pty_stub(&path).unwrap();
+        let once = fs::read_to_string(&path).unwrap();
+        assert!(once.contains("Termux/bionic stub"), "应写入 stub");
+        assert!(once.contains("exports.spawn = spawn;"), "stub 应导出 spawn");
+        let backup = dir.path().join("index.js.bak-termux-stub");
+        assert!(
+            fs::read_to_string(&backup).unwrap().contains("./utils"),
+            "原文件应备份"
+        );
+
+        write_pty_stub(&path).unwrap();
+        let twice = fs::read_to_string(&path).unwrap();
+        assert_eq!(once, twice, "重复打 stub 不应改变文件");
     }
 
     /// 构造一个带 prefix() 布局的最小 apiproxy 文件，验证补丁可应用且幂等。
