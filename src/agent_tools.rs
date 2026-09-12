@@ -978,11 +978,13 @@ fn patch_playwright_ld_preload(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Termux: install only a `dsh-url` helper that prints the latest token URL.
-/// `dsh` itself stays the native command (~/bin/dsh passthrough) — no wrapper
-/// function, no supervisor, no restart scripts (retired 2026-09-12, see
-/// ~/.dsh/attic-20260911). Any legacy managed block (old marker) is replaced
-/// by the helper; unknown marker-owned content is left alone.
+/// Termux: install a `dsh-url` helper (print latest token URL) plus a minimal
+/// `dsh()` guard that refuses to start a second `dsh web` while :3080 is
+/// occupied (bare re-runs used to collide with EADDRINUSE). Everything else
+/// passes through to the native command — no supervisor, no restart scripts
+/// (retired 2026-09-12, see ~/.dsh/attic-20260911). Any legacy managed block
+/// (old marker) is replaced by helper+guard; unknown marker-owned content is
+/// left alone.
 fn patch_dsh_web_wrapper(home: &Path) -> Result<(), String> {
     let bashrc = home.join(".bashrc");
     let marker = "# dsh-url: 取 dsh web 最新 token 链接";
@@ -990,6 +992,17 @@ fn patch_dsh_web_wrapper(home: &Path) -> Result<(), String> {
         r###"{marker}（dsh 保持原生命令，不包装）
 dsh-url() {{
   grep '^dsh web: http://127.0.0.1:3080/' ~/dsh-web-restart.log 2>/dev/null | tail -1 | sed 's/^dsh web: //;s/[[:space:]]*$//'
+}}
+# dsh 防重守卫：`dsh web` 在 3080 已被占用时只提示，不再起新进程。
+# 执意再起一个：command dsh web --port <其它端口>
+dsh() {{
+  if [ "$1" = "web" ] && curl -s -o /dev/null -m 2 http://127.0.0.1:3080/ 2>/dev/null; then
+    local pid
+    pid=$(pgrep -f '[d]sh (--profile[ =]web|web)( |$)' | head -1)
+    echo "[dsh] web 已在运行${{pid:+ (PID $pid)}}，不再起新进程；取链接: dsh-url"
+    return 0
+  fi
+  command dsh "$@"
 }}
 "###
     );
@@ -1854,10 +1867,13 @@ mod tests {
             "helper 应从重启日志取最新 token 链接"
         );
         assert!(
-            !content.contains("dsh() {"),
-            "不应再安装 dsh() 包装函数（dsh 保持原生命令）"
+            content.contains("不再起新进程") && content.contains("command dsh \"$@\""),
+            "应安装防重守卫（占端口只提示，其它透传）"
         );
-        assert!(!content.contains("setsid nohup"), "不应再包含后台拉起逻辑");
+        assert!(
+            !content.contains("setsid nohup"),
+            "守卫不应包含后台拉起逻辑"
+        );
     }
 
     #[test]
@@ -1893,7 +1909,8 @@ mod tests {
 
         let content = fs::read_to_string(home.join(".bashrc")).unwrap();
         assert!(content.contains("dsh-url() {"), "旧托管块应被 helper 替换");
-        assert!(!content.contains("dsh() {"), "旧 dsh() 包装应被清除");
+        assert!(content.contains("不再起新进程"), "替换后应带防重守卫");
+        assert!(!content.contains("setsid nohup"), "旧后台拉起逻辑应被清除");
         assert!(
             content.contains("user-content"),
             "托管块之后的用户内容应保留"
