@@ -688,22 +688,36 @@ fn patch_permission_presets(home: &Path) -> Result<(), String> {
 
 fn patch_session_persistence(home: &Path) -> Result<(), String> {
     let path = profiles_node_modules(home).join("dsh-session-persistence-jsonl/lib/index.js");
-    let content =
+    let mut content =
         fs::read_to_string(&path).map_err(|e| format!("session-persistence 缺失：{e}"))?;
-    if content.contains("error.code === \"EACCES\"") {
-        return Ok(());
+    if !content.contains("error.code === \"EACCES\"") {
+        // 0.1.5 起 import 行多了 lstat：只保证 rename 存在，不硬编码整行。
+        if !content.contains("rename, rm,") {
+            let imp_fixed = content.replacen("realpath, rm,", "realpath, rename, rm,", 1);
+            if imp_fixed == content {
+                return Err("session-persistence import 标记未找到（dsh 内部变更？）".to_string());
+            }
+            content = imp_fixed;
+        }
+        let link_old = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
+        let link_new = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
+        if !content.contains(link_old) {
+            return Err("session-persistence link 标记未找到（dsh 内部变更？）".to_string());
+        }
+        content = content.replace(link_old, link_new);
     }
-    let imp_old = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";";
-    let imp_new = "import { link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";";
-    let link_old = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
-    let link_new = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
-    if !content.contains(imp_old) || !content.contains(link_old) {
-        return Err("session-persistence 标记未找到（dsh 内部变更？）".to_string());
+    if !content.contains("posix-unlocked") {
+        // Termux/bionic (2026-09-12): node-addon-system 无 android-arm64 绑定，
+        // 会话恢复拿写锁直接炸（ERR_FLOCK_UNSUPPORTED_PLATFORM）。单用户设备：
+        // 降级为无锁继续，release() 照常关 fd。
+        let flock_old = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;";
+        let flock_new = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\t// Termux/bionic (2026-09-12): 无 flock 绑定，无锁继续。\n\t\t\t\t\tif (error?.code === \"ERR_FLOCK_UNSUPPORTED_PLATFORM\") {\n\t\t\t\t\t\treturn new SessionWriteLease({\n\t\t\t\t\t\t\tkind: \"posix-unlocked\",\n\t\t\t\t\t\t\thandle\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\t\t\t\t\tthrow error;";
+        if !content.contains(flock_old) {
+            return Err("session-persistence flock 标记未找到（dsh 内部变更？）".to_string());
+        }
+        content = content.replace(flock_old, flock_new);
     }
-    let fixed = content
-        .replace(imp_old, imp_new)
-        .replace(link_old, link_new);
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn patch_node_gyp() -> Result<(), String> {
@@ -1821,6 +1835,32 @@ mod tests {
             "托管块之后的用户内容应保留"
         );
         assert!(!content.contains(marker), "旧标记应随旧块一起清除");
+    }
+
+    #[test]
+    fn session_persistence_patches_apply_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let path = home.join(
+            ".dsh/profiles/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js",
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // 0.1.5 形态 fixture：import 含 lstat、无 rename；link 裸调用；flock 无降级。
+        let fixture = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";\nasync function acquire() {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t\ttry {\n\t\t\t\tawait tryLockExclusive(handle.fd);\n\t\t\t} catch (error) {\n\t\t\t\tif (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;\n\t\t\t}\n}\n";
+        fs::write(&path, fixture).unwrap();
+
+        patch_session_persistence(home).unwrap();
+        let once = fs::read_to_string(&path).unwrap();
+        assert!(once.contains("rename, rm,"), "import 应补 rename");
+        assert!(
+            once.contains("error.code === \"EACCES\""),
+            "link 回退应写入"
+        );
+        assert!(once.contains("posix-unlocked"), "flock 降级应写入");
+
+        patch_session_persistence(home).unwrap();
+        let twice = fs::read_to_string(&path).unwrap();
+        assert_eq!(once, twice, "重复打补丁不应改变文件");
     }
 
     /// 构造一个带 prefix() 布局的最小 apiproxy 文件，验证补丁可应用且幂等。
