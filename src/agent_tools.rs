@@ -967,7 +967,7 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     check(
         &mut out,
         "sharp import stub",
-        &dsh_nm.join("sharp/dist/index.mjs"),
+        &prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"),
         "Termux/bionic stub",
     );
     check(
