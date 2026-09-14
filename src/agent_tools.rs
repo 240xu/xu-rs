@@ -885,7 +885,7 @@ fn patch_frontend_cache_headers() -> Result<(), String> {
         return Ok(());
     }
     let old = "\tres.writeHead(200, { \"content-type\": type });\n\tres.end(body);";
-    let new = "\t// Termux perf patch: vite emits content-hashed filenames, so everything\n\t// under /assets/ is immutable — cache it hard so the phone browser skips\n\t// re-downloading + re-parsing ~1.3MB JS on every visit. Other static files\n\t// get one day; the injected index stays uncached.\n\tconst cacheControl = target === distIndex\n\t\t? undefined\n\t\t: pathname.startsWith(\"/assets/\")\n\t\t\t? \"public, max-age=31536000, immutable\"\n\t\t\t: \"public, max-age=86400\";\n\tres.writeHead(200, {\n\t\t\"content-type\": type,\n\t\t...(cacheControl === undefined ? {} : { \"cache-control\": cacheControl }),\n\t});\n\tres.end(body);";
+    let new = "\t// Termux perf patch: vite emits content-hashed filenames, so everything\n\t// under /assets/ is immutable — cache it hard so the phone browser skips\n\t// re-downloading + re-parsing ~1.3MB JS on every visit. Other static files\n\t// get one day; the injected index (root or distIndex) stays uncached.\n\tconst isIndex = target === distRoot || target === distIndex;\n\tconst cacheControl = isIndex\n\t\t? undefined\n\t\t: pathname.startsWith(\"/assets/\")\n\t\t\t? \"public, max-age=31536000, immutable\"\n\t\t\t: \"public, max-age=86400\";\n\tres.writeHead(200, {\n\t\t\"content-type\": type,\n\t\t...(cacheControl === undefined ? {} : { \"cache-control\": cacheControl }),\n\t});\n\tres.end(body);";
     if !content.contains(old) {
         return Err("frontend-static 缓存头锚点未找到（dsh 内部变更？）".to_string());
     }
