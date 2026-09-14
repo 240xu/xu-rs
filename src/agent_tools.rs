@@ -640,6 +640,7 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     patch_fs_search()?;
     patch_playwright_ld_preload(home)?;
     patch_apiproxy_termux_open()?;
+    patch_frontend_cache_headers()?;
     patch_dsh_web_wrapper(home)?;
 
     log.push_str("[8/8] 验证 headless 启动...\n");
@@ -867,6 +868,28 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
         .replace(opener_old, opener_new)
         .replace(can_old, can_new);
     atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Termux perf: serve /assets/ with immutable cache headers (vite emits
+/// content-hashed filenames) so the phone browser stops re-downloading and
+/// re-parsing the ~1.3MB JS bundle on every visit. Non-hashed static files
+/// get a one-day cache; the injected index stays uncached.
+fn patch_frontend_cache_headers() -> Result<(), String> {
+    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-frontend-static/lib/index.js");
+    if !path.exists() {
+        return Err("dsh-host-frontend-static 缺失（dsh 未安装？）".to_string());
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("frontend-static 读取失败：{e}"))?;
+    if content.contains("Termux perf patch") {
+        return Ok(());
+    }
+    let old = "\tres.writeHead(200, { \"content-type\": type });\n\tres.end(body);";
+    let new = "\t// Termux perf patch: vite emits content-hashed filenames, so everything\n\t// under /assets/ is immutable — cache it hard so the phone browser skips\n\t// re-downloading + re-parsing ~1.3MB JS on every visit. Other static files\n\t// get one day; the injected index stays uncached.\n\tconst cacheControl = target === distIndex\n\t\t? undefined\n\t\t: pathname.startsWith(\"/assets/\")\n\t\t\t? \"public, max-age=31536000, immutable\"\n\t\t\t: \"public, max-age=86400\";\n\tres.writeHead(200, {\n\t\t\"content-type\": type,\n\t\t...(cacheControl === undefined ? {} : { \"cache-control\": cacheControl }),\n\t});\n\tres.end(body);";
+    if !content.contains(old) {
+        return Err("frontend-static 缓存头锚点未找到（dsh 内部变更？）".to_string());
+    }
+    atomic_write(&path, content.replace(old, new).as_bytes()).map_err(|e| e.to_string())
 }
 
 fn patch_subprocess_local() -> Result<(), String> {
@@ -1948,6 +1971,33 @@ mod tests {
             "托管块之后的用户内容应保留"
         );
         assert!(!content.contains(marker), "旧标记应随旧块一起清除");
+    }
+
+    #[test]
+    fn frontend_cache_headers_apply_and_idempotent() {
+        // 该补丁直接读 prefix() 布局（编译期常量），仿 apiproxy 测法：
+        // 真实文件存在时验证补丁落点与幂等性；不存在则跳过。
+        let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-frontend-static/lib/index.js");
+        if !path.exists() {
+            return;
+        }
+        let before = fs::read_to_string(&path).unwrap();
+        let already = before.contains("Termux perf patch");
+
+        patch_frontend_cache_headers().unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            after.contains("max-age=31536000, immutable"),
+            "assets 应写入 immutable 缓存头"
+        );
+        if already {
+            assert_eq!(before, after, "已打补丁时不应改变文件");
+        }
+
+        patch_frontend_cache_headers().unwrap();
+        let again = fs::read_to_string(&path).unwrap();
+        assert_eq!(after, again, "重复打补丁不应改变文件");
     }
 
     #[test]
