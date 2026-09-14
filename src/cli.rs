@@ -981,6 +981,14 @@ fn doctor_command(home: &Path) -> Result<String, String> {
             if path.exists() { "exists" } else { "missing" }
         ));
     }
+    out.push_str("dsh patches（Termux 兼容补丁漂移检测）:\n");
+    for (name, state, detail) in crate::agent_tools::dsh_patch_status(home) {
+        out.push_str(&format!("  [{state}] {name}"));
+        if !detail.is_empty() {
+            out.push_str(&format!(" -- {detail}"));
+        }
+        out.push('\n');
+    }
     for key in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",

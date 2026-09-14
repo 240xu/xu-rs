@@ -870,6 +870,147 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
     atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Read-only drift report for every Termux patch this installer applies.
+/// Returns `(name, state, detail)` where state is one of
+/// `ok` / `DRIFT` (patch lost, file present) / `n/a` (target not installed)
+/// / `err` (unreadable). Wired into `spec doctor` so a silent `npm i -g dsh`
+/// that wipes node_modules patches becomes visible instead of mysterious.
+pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
+    let dsh_nm = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai");
+    let mut out = Vec::new();
+
+    fn check(out: &mut Vec<(String, String, String)>, name: &str, path: &Path, marker: &str) {
+        if !path.exists() {
+            out.push((name.to_string(), "n/a".to_string(), "未安装".to_string()));
+            return;
+        }
+        match fs::read_to_string(path) {
+            Ok(content) if content.contains(marker) => {
+                out.push((name.to_string(), "ok".to_string(), String::new()))
+            }
+            Ok(_) => out.push((
+                name.to_string(),
+                "DRIFT".to_string(),
+                format!("缺标记 {marker}（npm 重装会丢，跑 spec agent install dsh 恢复）"),
+            )),
+            Err(error) => out.push((name.to_string(), "err".to_string(), error.to_string())),
+        }
+    }
+
+    // 1. shebang（Termux 无 /usr/bin/env）
+    let bin_js = prefix().join("lib/node_modules/@deepseek-ai/dsh/lib/bin.js");
+    if bin_js.exists() {
+        let ok = fs::read_to_string(&bin_js)
+            .map(|c| c.starts_with("#!/data/data/com.termux/files/usr/bin/node --expose-internals"))
+            .unwrap_or(false);
+        out.push((
+            "dsh shebang".to_string(),
+            if ok { "ok" } else { "DRIFT" }.to_string(),
+            String::new(),
+        ));
+    } else {
+        out.push((
+            "dsh shebang".to_string(),
+            "n/a".to_string(),
+            "未安装".to_string(),
+        ));
+    }
+
+    check(
+        &mut out,
+        "fs-search rg 回退",
+        &dsh_nm.join("dsh-tool-fs-search/lib/index.js"),
+        "compatibility patch",
+    );
+    check(
+        &mut out,
+        "session flock 降级",
+        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        "posix-unlocked",
+    );
+    check(
+        &mut out,
+        "session link→rename",
+        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        "error.code === \"EACCES\"",
+    );
+    check(
+        &mut out,
+        "session publish rename",
+        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        "rename(staged",
+    );
+    check(
+        &mut out,
+        "assets 缓存头",
+        &dsh_nm.join("dsh-host-frontend-static/lib/index.js"),
+        "max-age=31536000, immutable",
+    );
+    check(
+        &mut out,
+        "apiproxy termux-open",
+        &dsh_nm.join("dsh-native-command/lib/index.js"),
+        "termux-open",
+    );
+    check(
+        &mut out,
+        "archived decoder",
+        &home.join(".dsh/profiles/web/node_modules/dsh-archived-sessions/lib/index.js"),
+        "vendored storage-row decoder",
+    );
+    check(
+        &mut out,
+        "websearch 0.1.5 兼容",
+        &home.join(".dsh/profiles/web/node_modules/@240xu/dsh-websearch/lib/index.js"),
+        "settingsCtx.settings.installSection",
+    );
+    check(
+        &mut out,
+        "sharp import stub",
+        &dsh_nm.join("sharp/dist/index.mjs"),
+        "Termux/bionic stub",
+    );
+    check(
+        &mut out,
+        "profile 沙箱适配",
+        &home.join(".dsh/profiles/web/cordis.patch.yml"),
+        "dsh-sandbox-local",
+    );
+    check(
+        &mut out,
+        ".bashrc dsh-url/dsh-open",
+        &home.join(".bashrc"),
+        "dsh-open()",
+    );
+
+    // node-pty: 真编产物 或 stub 二者有其一即视为可用
+    let pty_dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty");
+    if pty_dir.join("build/Release/pty.node").exists() {
+        out.push((
+            "node-pty 原生编译".to_string(),
+            "ok".to_string(),
+            String::new(),
+        ));
+    } else {
+        check(
+            &mut out,
+            "node-pty stub 回退",
+            &pty_dir.join("lib/index.js"),
+            "Termux/bionic stub",
+        );
+    }
+
+    // node-gyp android→linux（无 NDK）
+    check(
+        &mut out,
+        "node-gyp android 映射",
+        &prefix().join("lib/node_modules/npm/node_modules/node-gyp/gyp/pylib/gyp/input.py"),
+        "variables[\"OS\"] = \"linux\"",
+    );
+
+    out
+}
+
 /// Termux perf: serve /assets/ with immutable cache headers (vite emits
 /// content-hashed filenames) so the phone browser stops re-downloading and
 /// re-parsing the ~1.3MB JS bundle on every visit. Non-hashed static files
@@ -1971,6 +2112,26 @@ mod tests {
             "托管块之后的用户内容应保留"
         );
         assert!(!content.contains(marker), "旧标记应随旧块一起清除");
+    }
+
+    #[test]
+    fn dsh_patch_status_reports_known_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dsh_patch_status(dir.path());
+        assert!(!report.is_empty(), "应返回补丁清单");
+        for (name, state, _detail) in &report {
+            assert!(
+                ["ok", "DRIFT", "n/a", "err"].contains(&state.as_str()),
+                "{name} 状态异常: {state}"
+            );
+        }
+        // 本仓目标机上至少应有若干补丁处于 ok（dsh 已安装且已打补丁）
+        let installed =
+            dsh_patch_status(&std::env::var("HOME").map(PathBuf::from).unwrap_or_default());
+        assert!(
+            installed.iter().any(|(_, state, _)| state == "ok"),
+            "真机应至少有一项补丁为 ok"
+        );
     }
 
     #[test]
