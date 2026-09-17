@@ -16,26 +16,26 @@ const REPO = "240xu/xu-rs";
 // decoupled from VERSION: the npm wrapper can be republished (installer fixes,
 // docs) without rebuilding the Rust binary. Bump only when a new GitHub Release
 // asset is cut.
-const BIN_VERSION = "0.1.0";
+const BIN_VERSION = "0.1.1";
 
 // sha256 of the release tarballs, from dist/SHA256SUMS at release time.
 const CHECKSUMS = {
-  "trivium-0.1.0-android-aarch64.tar.gz":
-    "3e4a41efdffa7d28b84ef8b660f7b532c18e956e0dea7c17ab813f4504282038",
+  "trivium-0.1.1-android-aarch64.r2.tar.gz":
+    "8004fca54517d433935ba7124bfdcf0cd8b7cb0f155bbbde95025f256c1513a7",
 };
 
 // GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
-const ASSET_ID = "547284461";
+const ASSET_ID = "571151064";
 
 // Expected byte size of the tarball; guards against truncated / HTML error pages
 // being accepted as a valid download.
-const EXPECTED_SIZE = 4407493;
+const EXPECTED_SIZE = 13252925;
 
 function assetForPlatform() {
   const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
   const arch = process.arch; // 'arm64', 'x64', ...
   if ((plat === "android" || plat === "linux") && arch === "arm64") {
-    return `trivium-${BIN_VERSION}-android-aarch64.tar.gz`;
+    return `trivium-${BIN_VERSION}-android-aarch64.r2.tar.gz`;
   }
   return null;
 }
@@ -109,8 +109,9 @@ async function main() {
   }
   const vendor = join(__dirname, "vendor");
   mkdirSync(vendor, { recursive: true });
-  // Tarball layout: <name>/bin/{trivium,xcc,spec}. Extract binary + compat aliases.
-  const base = asset.replace(/\.tar\.gz$/, "");
+  // Tarball layout: <TARBALL_DIR>/bin/{trivium,xcc,spec}. The asset filename
+  // carries a cache-busting suffix (.rN) that is NOT part of the inner path.
+  const base = `trivium-${BIN_VERSION}-android-aarch64`;
   execFileSync("tar", [
     "-xzf", tmp, "-C", vendor, "--strip-components=2",
     `${base}/bin/trivium`, `${base}/bin/xcc`, `${base}/bin/spec`,
@@ -118,7 +119,26 @@ async function main() {
   for (const b of ["trivium", "xcc", "spec"]) {
     chmodSync(join(vendor, b), 0o755);
   }
+  fixBinShebangs();
   console.log(`[trivium] installed ${asset} -> vendor/{trivium,xcc,spec}`);
+}
+
+// Termux/bionic has no /usr/bin/env; termux-exec's LD_PRELOAD normally covers
+// the npm bin shims, but shells without it (daemons, other sandboxes) get
+// "bad interpreter: No such file or directory". Rewrite to the absolute node
+// path on Android so the entry points always work.
+function fixBinShebangs() {
+  if (process.platform !== "android") return;
+  const node = process.execPath;
+  for (const b of ["trivium.js", "xcc.js", "spec.js"]) {
+    const p = join(__dirname, "bin", b);
+    try {
+      const src = require("node:fs").readFileSync(p, "utf8");
+      if (src.startsWith("#!/usr/bin/env")) {
+        require("node:fs").writeFileSync(p, src.replace(/^#!.*\n/, `#!${node}\n`));
+      }
+    } catch {}
+  }
 }
 
 main().catch((e) => {
