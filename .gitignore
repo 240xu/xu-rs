@@ -8,3 +8,4 @@ build.log
 *.log
 npm-new/
 dist/
+npm/*.tgz
