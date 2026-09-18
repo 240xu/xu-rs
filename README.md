@@ -33,6 +33,18 @@ trivium agent setup --yes        # 安装/更新 opencode、claude、codex
 sv up spec-serve              # 启动；sv status spec-serve 查看；sv down 停止
 ```
 
+### npm 安装（免构建，android-aarch64 预编译）
+
+```sh
+npm i -g @240xu/trivium
+trivium --version
+trivium agent doctor          # 含 DSH 补丁漂移检测（[ok]/[DRIFT] 逐项列出）
+```
+
+> 新版 npm 若拦截 postinstall（`npm warn install-scripts`），先
+> `npm config set ignore-scripts false` 或
+> `npm install-scripts approve @240xu/trivium`，否则 vendor 二进制不会下载。
+
 ### 直接使用脚本安装
 
 ```sh
@@ -132,6 +144,11 @@ sv restart spec-serve # 重启（改配置后）
 
 **问：密钥安全？**
 答：dry-run diff、`trivium provider show`、`trivium provider export` 均默认脱敏密钥；导出需显式 `--include-secrets`。TUI 导出永远脱敏。
+
+## 技术文档
+
+- [TERMUX_DSH_PATCHING.md](TERMUX_DSH_PATCHING.md) — DSH Termux 兼容补丁链：14 项补丁的锚点/标记/恢复方式、`spec doctor` 漂移检测、dsh web 原生运维、已知故障模式速查
+- [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) — GitHub Release + npm 发版手册：版本三层解耦、资产契约、缓存破坏位、E2E 验证、Git Data API 推送降级
 
 ## 开发
 
