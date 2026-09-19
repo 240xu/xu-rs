@@ -1,6 +1,8 @@
 # DSH Termux 兼容补丁链（技术参考）
 
-> 适用：DSH `0.1.5-rc.2` × Termux (android-arm64, bionic)。
+> 适用：DSH `0.1.5-rc.2`（生产）× Termux (android-arm64, bionic)；
+> `0.1.6-alpha.2` 适配已就绪（补丁 #15 + fs-search v4 锚点 + hoist 路径解析，
+> 隔离 E2E 验证到 MISSING_CREDENTIAL），生产未升级，npm `latest` 仍指向 0.1.5-rc.2。
 > 维护者入口：`spec doctor` 看漂移 → `spec agent install dsh` 一键补回。
 > 本文描述每个补丁的**为什么、锚点在哪、怎么验证、怎么恢复**。所有补丁均幂等（重复执行不重复追加）。
 
@@ -41,6 +43,7 @@
 | 12 | node-gyp android 映射 | `$PREFIX/lib/node_modules/npm/…/gyp/pylib/gyp/input.py` | `variables["OS"] = "linux"` | 无 NDK 时按 linux 处理 gyp android 分支 |
 | 13 | profile 沙箱适配 | `~/.dsh/profiles/{web,headless}/cordis.patch.yml` | `dsh-sandbox-local`（disabled 行） | 只禁 sandbox-local；**勿禁 bash-sandbox**（sandboxMode 唯一提供者，禁了 permission 守卫 fatal）；**勿插 bare bash-local**（抢 shell 位且无 sandboxMode，同样 fatal） |
 | 14 | .bashrc 助手 | `~/.bashrc` | `dsh-open()` | `dsh-url`（取 token 链接）、`dsh-open`（一键跳浏览器）、`dsh()` 防重守卫 |
+| 15 | app-boot 内部模块回退 | prefix 下 `dsh-app-boot/lib/index.js`（经 hoist 解析） | `Termux/bionic internalModules fallback` | 0.1.6-alpha.2 起 host preparation 顶层直连 `node-addon-require-builtin` 原生绑定；该包无 android-arm64 且 fail closed。dsh 恒带 `--expose-internals`，回退走 plain createRequire，直达同一批内部模块（下游 shape 校验照常）。0.1.5 及更早无此机制，补丁与 doctor 均为 n/a |
 
 全局树与 profile 树的关键文件多为**同一 inode 硬链接**（改一边等于改两边）；npm 重装会同时洗掉两侧。
 

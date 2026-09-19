@@ -632,6 +632,7 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     log.push_str("[8/8] 应用 Termux 兼容补丁...\n");
     patch_permission_presets(home)?;
     patch_session_persistence(home)?;
+    patch_app_boot_internal_modules()?;
     patch_node_gyp()?;
     rebuild_node_pty()?;
     patch_attachment_local(home)?;
@@ -672,6 +673,29 @@ fn dsh_tool() -> AgentTool {
 
 fn profiles_node_modules(home: &Path) -> PathBuf {
     home.join(".dsh/profiles/node_modules/@deepseek-ai")
+}
+
+fn dsh_package_path_from(prefix: &Path, package: &str) -> PathBuf {
+    let package = package.trim_start_matches("@deepseek-ai/");
+    let candidates = [
+        prefix.join(format!(
+            "lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/{package}"
+        )),
+        prefix.join(format!(
+            "lib/node_modules/@deepseek-ai/dsh/node_modules/{package}"
+        )),
+        prefix.join(format!("lib/node_modules/@deepseek-ai/{package}")),
+        prefix.join(format!("lib/node_modules/{package}")),
+    ];
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
+}
+
+fn dsh_package_path(package: &str) -> PathBuf {
+    dsh_package_path_from(&prefix(), package)
 }
 
 fn patch_permission_presets(home: &Path) -> Result<(), String> {
@@ -749,7 +773,7 @@ fn patch_node_gyp() -> Result<(), String> {
 }
 
 fn rebuild_node_pty() -> Result<(), String> {
-    let dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty");
+    let dir = dsh_package_path("node-pty");
     if dir.join("build/Release/pty.node").exists() {
         return Ok(());
     }
@@ -822,6 +846,11 @@ fn patch_attachment_local(home: &Path) -> Result<(), String> {
     // loads and only actual image calls throw a clear error. This covers ALL
     // call sites at once (probe/detect/normalize pipelines), present and
     // future, regardless of upstream indentation refactors.
+    // 0.1.6-alpha.2 起上游改用 createLazyRequire("sharp") 懒加载，import 期
+    // 已安全，无需补丁，直接通过。
+    if content.contains("createLazyRequire(\"sharp\"") {
+        return Ok(());
+    }
     let imp_old = "import sharp from \"sharp\";\n";
     if !content.contains(imp_old) {
         if content.contains("sharp(") {
@@ -846,6 +875,8 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
     let candidates = [
         prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js"),
         prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-native-command/lib/index.js"),
+        dsh_package_path("dsh-host-apiproxy").join("lib/index.js"),
+        dsh_package_path("dsh-native-command").join("lib/index.js"),
     ];
     let path = candidates
         .iter()
@@ -876,7 +907,6 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
 /// / `err` (unreadable). Wired into `spec doctor` so a silent `npm i -g dsh`
 /// that wipes node_modules patches becomes visible instead of mysterious.
 pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
-    let dsh_nm = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai");
     let mut out = Vec::new();
 
     fn check(out: &mut Vec<(String, String, String)>, name: &str, path: &Path, marker: &str) {
@@ -919,39 +949,79 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     check(
         &mut out,
         "fs-search rg 回退",
-        &dsh_nm.join("dsh-tool-fs-search/lib/index.js"),
+        &dsh_package_path("dsh-tool-fs-search").join("lib/index.js"),
         "compatibility patch",
     );
     check(
         &mut out,
         "session flock 降级",
-        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        &dsh_package_path("dsh-session-persistence-jsonl").join("lib/index.js"),
         "posix-unlocked",
     );
     check(
         &mut out,
         "session link→rename",
-        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        &dsh_package_path("dsh-session-persistence-jsonl").join("lib/index.js"),
         "error.code === \"EACCES\"",
     );
     check(
         &mut out,
         "session publish rename",
-        &dsh_nm.join("dsh-session-persistence-jsonl/lib/index.js"),
+        &dsh_package_path("dsh-session-persistence-jsonl").join("lib/index.js"),
         "rename(staged",
     );
     check(
         &mut out,
         "assets 缓存头",
-        &dsh_nm.join("dsh-host-frontend-static/lib/index.js"),
+        &dsh_package_path("dsh-host-frontend-static").join("lib/index.js"),
         "max-age=31536000, immutable",
     );
     check(
         &mut out,
         "apiproxy termux-open",
-        &dsh_nm.join("dsh-native-command/lib/index.js"),
+        &dsh_package_path("dsh-native-command").join("lib/index.js"),
         "termux-open",
     );
+    // app-boot 内部模块回退：0.1.5 无此机制 (n/a)；alpha 有锚点无标记 (DRIFT)；有标记 (ok)
+    {
+        let path = dsh_package_path("dsh-app-boot").join("lib/index.js");
+        if !path.exists() {
+            out.push((
+                "app-boot 内部模块回退".to_string(),
+                "n/a".to_string(),
+                "未安装".to_string(),
+            ));
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(content)
+                    if content.contains("Termux/bionic internalModules fallback") =>
+                {
+                    out.push(("app-boot 内部模块回退".to_string(), "ok".to_string(), String::new()))
+                }
+                Ok(content)
+                    if content
+                        .contains("createRequire(import.meta.url)(\"node-addon-require-builtin\")") =>
+                {
+                    out.push((
+                        "app-boot 内部模块回退".to_string(),
+                        "DRIFT".to_string(),
+                        "缺标记 Termux/bionic internalModules fallback（跑 spec agent install dsh 恢复）"
+                            .to_string(),
+                    ))
+                }
+                Ok(_) => out.push((
+                    "app-boot 内部模块回退".to_string(),
+                    "n/a".to_string(),
+                    "此版本无需（0.1.5 及更早无原生直连）".to_string(),
+                )),
+                Err(error) => out.push((
+                    "app-boot 内部模块回退".to_string(),
+                    "err".to_string(),
+                    error.to_string(),
+                )),
+            }
+        }
+    }
     check(
         &mut out,
         "archived decoder",
@@ -967,7 +1037,7 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     check(
         &mut out,
         "sharp import stub",
-        &prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/sharp/dist/index.mjs"),
+        &dsh_package_path("sharp").join("dist/index.mjs"),
         "Termux/bionic stub",
     );
     check(
@@ -984,7 +1054,7 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     );
 
     // node-pty: 真编产物 或 stub 二者有其一即视为可用
-    let pty_dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty");
+    let pty_dir = dsh_package_path("node-pty");
     if pty_dir.join("build/Release/pty.node").exists() {
         out.push((
             "node-pty 原生编译".to_string(),
@@ -1016,7 +1086,8 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
 /// re-parsing the ~1.3MB JS bundle on every visit. Non-hashed static files
 /// get a one-day cache; the injected index stays uncached.
 fn patch_frontend_cache_headers() -> Result<(), String> {
-    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-frontend-static/lib/index.js");
+    // 0.1.6-alpha.2 起 npm hoist：包可能不在 dsh 私有 node_modules 下
+    let path = dsh_package_path("dsh-host-frontend-static").join("lib/index.js");
     if !path.exists() {
         return Err("dsh-host-frontend-static 缺失（dsh 未安装？）".to_string());
     }
@@ -1034,7 +1105,7 @@ fn patch_frontend_cache_headers() -> Result<(), String> {
 }
 
 fn patch_subprocess_local() -> Result<(), String> {
-    let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-subprocess-local/lib/index.js");
+    let path = dsh_package_path("dsh-subprocess-local").join("lib/index.js");
     if !path.exists() {
         return Err("subprocess-local 缺失（dsh 未安装？）".to_string());
     }
@@ -1059,11 +1130,77 @@ fn patch_subprocess_local() -> Result<(), String> {
     atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Splice the system-rg fallback into one dsh-tool-fs-search bundle.
+/// Ok(Some) = patched now; Ok(None) = already carries the marker (idempotent);
+/// Err(()) = unknown upstream shape (caller reports the path).
+fn splice_fs_search_fallback(content: &str) -> Result<Option<String>, ()> {
+    if content.contains("android-arm64") {
+        return Ok(None);
+    }
+    // 兼容四代上游锚点：v1 import().then() / v2 Promise.resolve + simple sidecar /
+    // v3 Promise.resolve + parse sidecar (0.1.2-alpha.5) /
+    // v4 parse sidecar + Electron asar 解包分支 (0.1.6-alpha.2)
+    let old_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath);\n\treturn rgPathPromise;\n}";
+    let new_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+    let old_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
+    let new_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+    let old_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
+    let new_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+    let old_v4 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\tconst dependency = (await import(\"@vscode/ripgrep\")).rgPath;\n\t\treturn process.versions.electron === void 0 ? dependency : dependency.replace(/\\.asar(?=[\\\\/])/u, \".asar.unpacked\");\n\t});\n\treturn rgPathPromise;\n}";
+    let new_v4 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\tconst dependency = (await import(\"@vscode/ripgrep\")).rgPath;\n\t\treturn process.versions.electron === void 0 ? dependency : dependency.replace(/\\.asar(?=[\\\\/])/u, \".asar.unpacked\");\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
+    for (old, new) in [
+        (old_v1, new_v1),
+        (old_v2, new_v2),
+        (old_v3, new_v3),
+        (old_v4, new_v4),
+    ] {
+        if content.contains(old) {
+            return Ok(Some(content.replace(old, new)));
+        }
+    }
+    Err(())
+}
+
+/// Splice the Termux fallback into dsh-app-boot's `internalModules()`.
+/// 0.1.6-alpha.2 起 host preparation 在模块顶层直连 `node-addon-require-builtin`
+/// 原生绑定；该包未发布 android-arm64 且 fail closed，导致 Android 上启动即炸。
+/// dsh 恒带 `--expose-internals` 运行，此时 plain createRequire 直达同一批内部
+/// 模块（下游 shape 校验照常生效），因此回退语义等价。
+/// Ok(Some) = patched now; Ok(None) = already carries the marker (idempotent);
+/// Err(()) = unknown upstream shape (caller decides loud vs quiet).
+fn splice_app_boot_internal_modules(content: &str) -> Result<Option<String>, ()> {
+    if content.contains("Termux/bionic internalModules fallback") {
+        return Ok(None);
+    }
+    let old = "function internalModules() {\n\tconst addon = createRequire(import.meta.url)(\"node-addon-require-builtin\");";
+    let new = "function internalModules() {\n\tconst creq = createRequire(import.meta.url);\n\tlet addon;\n\ttry {\n\t\taddon = creq(\"node-addon-require-builtin\");\n\t} catch {\n\t\t// Termux/bionic internalModules fallback: node-addon-require-builtin ships no\n\t\t// android-arm64 binding and published installs fail closed. dsh always runs\n\t\t// with --expose-internals, so plain createRequire reaches the identical\n\t\t// internal modules (the shape checks below still apply).\n\t\taddon = { requireBuiltin: (id) => creq(id) };\n\t}";
+    if content.contains(old) {
+        return Ok(Some(content.replace(old, new)));
+    }
+    Err(())
+}
+
+fn patch_app_boot_internal_modules() -> Result<(), String> {
+    // 0.1.6-alpha.2 起 npm hoist：包可能不在 dsh 私有 node_modules 下
+    let path = dsh_package_path("dsh-app-boot").join("lib/index.js");
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("app-boot 读取失败：{e}"))?;
+    match splice_app_boot_internal_modules(&content) {
+        Ok(None) => Ok(()),
+        Ok(Some(fixed)) => atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string()),
+        // 0.1.5 及更早：无 internalModules 原生直连机制，无需补丁
+        Err(()) if !content.contains("function internalModules()") => Ok(()),
+        Err(()) => Err("app-boot internalModules 标记未找到（dsh 内部变更？）".to_string()),
+    }
+}
+
 fn patch_fs_search() -> Result<(), String> {
     // 需要同时修全局 npm 包与已物化的 profile 副本（bootstrap 已把前者拷到后者）
     let candidates = {
-        let global =
-            prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js");
+        // 0.1.6-alpha.2 起 npm hoist：包可能不在 dsh 私有 node_modules 下
+        let global = dsh_package_path("dsh-tool-fs-search").join("lib/index.js");
         let home = dirs::home_dir()
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("/data/data/com.termux/files/home"));
@@ -1086,32 +1223,21 @@ fn patch_fs_search() -> Result<(), String> {
         }
         let content = fs::read_to_string(&path)
             .map_err(|e| format!("dsh-tool-fs-search 读取失败 {}：{e}", path.display()))?;
-        if content.contains("android-arm64") {
-            patched += 1;
-            continue;
+        match splice_fs_search_fallback(&content) {
+            Ok(None) => {
+                patched += 1;
+            }
+            Ok(Some(fixed)) => {
+                atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())?;
+                patched += 1;
+            }
+            Err(()) => {
+                last_err = Some(format!(
+                    "resolveRgPath 标记未找到（dsh 内部变更？）: {}",
+                    path.display()
+                ));
+            }
         }
-        // 兼容三代上游锚点：v1 import().then() / v2 Promise.resolve + simple sidecar / v3 Promise.resolve + parse sidecar (0.1.2-alpha.5)
-        let old_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath);\n\treturn rgPathPromise;\n}";
-        let new_v1 = "function resolveRgPath() {\n\trgPathPromise ??= import(\"@vscode/ripgrep\").then((module) => module.rgPath).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
-        let old_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
-        let new_v2 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executableSidecar = `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
-        let old_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t});\n\treturn rgPathPromise;\n}";
-        let new_v3 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\treturn (await import(\"@vscode/ripgrep\")).rgPath;\n\t}).catch(async () => {\n\t\t// Termux/Android compatibility patch: the packaged @vscode/ripgrep-<platform>-<arch>\n\t\t// optional dependency is not shipped for android-arm64. Fall back to the system\n\t\t// ripgrep binary when the packaged one cannot be resolved.\n\t\tconst { execFileSync } = await import(\"node:child_process\");\n\t\texecFileSync(\"rg\", [\"--version\"], { stdio: \"ignore\" });\n\t\treturn \"rg\";\n\t});\n\treturn rgPathPromise;\n}";
-        let fixed = if content.contains(old_v1) {
-            content.replace(old_v1, new_v1)
-        } else if content.contains(old_v2) {
-            content.replace(old_v2, new_v2)
-        } else if content.contains(old_v3) {
-            content.replace(old_v3, new_v3)
-        } else {
-            last_err = Some(format!(
-                "resolveRgPath 标记未找到（dsh 内部变更？）: {}",
-                path.display()
-            ));
-            continue;
-        };
-        atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())?;
-        patched += 1;
     }
     if patched == 0 {
         return Err(
@@ -2136,9 +2262,9 @@ mod tests {
 
     #[test]
     fn frontend_cache_headers_apply_and_idempotent() {
-        // 该补丁直接读 prefix() 布局（编译期常量），仿 apiproxy 测法：
+        // 该补丁直接读 prefix() 布局（经 dsh_package_path 解析 hoist 布局），仿 apiproxy 测法：
         // 真实文件存在时验证补丁落点与幂等性；不存在则跳过。
-        let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-frontend-static/lib/index.js");
+        let path = dsh_package_path("dsh-host-frontend-static").join("lib/index.js");
         if !path.exists() {
             return;
         }
@@ -2263,7 +2389,13 @@ mod tests {
     #[test]
     fn apiproxy_termux_open_anchors_match_real_file() {
         // 真实文件若已安装，锚点必须能命中（已打补丁则跳过）。
-        let path = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-host-apiproxy/lib/index.js");
+        // 上游 0.1.2-alpha.5 起为 dsh-native-command，旧名仅作回退。
+        let native = dsh_package_path("dsh-native-command").join("lib/index.js");
+        let path = if native.exists() {
+            native
+        } else {
+            dsh_package_path("dsh-host-apiproxy").join("lib/index.js")
+        };
         if !path.exists() {
             return;
         }
@@ -2291,5 +2423,112 @@ mod tests {
         // 幂等：再跑一次不变
         let twice = fixed.replace(opener_old, opener_new);
         assert_eq!(fixed, twice);
+    }
+
+    #[test]
+    fn fs_search_fallback_covers_alpha_v4_anchor() {
+        // 0.1.6-alpha.2 实测形态（parse sidecar + Electron asar 解包分支）。
+        let old_v4 = "function resolveRgPath() {\n\trgPathPromise ??= Promise.resolve().then(async () => {\n\t\tconst executable = parse(process.execPath);\n\t\tconst executableSidecar = process.platform === \"win32\" ? join(executable.dir, `${executable.name}-rg.exe`) : `${process.execPath}-rg`;\n\t\tif (\"pkg\" in process && existsSync(executableSidecar)) return executableSidecar;\n\t\tconst dependency = (await import(\"@vscode/ripgrep\")).rgPath;\n\t\treturn process.versions.electron === void 0 ? dependency : dependency.replace(/\\.asar(?=[\\\\/])/u, \".asar.unpacked\");\n\t});\n\treturn rgPathPromise;\n}";
+        let fixed = splice_fs_search_fallback(old_v4)
+            .expect("v4 anchor must be recognized")
+            .expect("unpatched v4 must produce patched output");
+        assert!(fixed.contains("android-arm64"), "应写入回退标记");
+        assert!(fixed.contains("return \"rg\";"), "应回退到系统 rg");
+        assert!(
+            splice_fs_search_fallback(&fixed)
+                .expect("patched content must parse")
+                .is_none(),
+            "已打补丁时应返回 None（幂等）",
+        );
+    }
+
+    #[test]
+    fn app_boot_internal_modules_fallback_covers_alpha_anchor() {
+        // 0.1.6-alpha.2 pristine 形态（dsh-app-boot/lib/index.js，tab 缩进）。
+        let pristine = "function internalModules() {\n\tconst addon = createRequire(import.meta.url)(\"node-addon-require-builtin\");\n\tconst esmModule = addon.requireBuiltin(\"internal/modules/esm/loader\");\n}";
+        let fixed = splice_app_boot_internal_modules(pristine)
+            .expect("alpha anchor must be recognized")
+            .expect("unpatched alpha must produce patched output");
+        assert!(
+            fixed.contains("Termux/bionic internalModules fallback"),
+            "应写入回退标记",
+        );
+        assert!(
+            fixed.contains("requireBuiltin: (id) => creq(id)"),
+            "回退应走 createRequire（dsh 带 --expose-internals，同源模块）",
+        );
+        assert!(
+            fixed.contains(
+                "const esmModule = addon.requireBuiltin(\"internal/modules/esm/loader\");"
+            ),
+            "后续调用保持不动",
+        );
+        assert!(
+            splice_app_boot_internal_modules(&fixed)
+                .expect("patched content must parse")
+                .is_none(),
+            "已打补丁时应返回 None（幂等）",
+        );
+    }
+
+    #[test]
+    fn app_boot_internal_modules_rejects_unknown_shape() {
+        assert!(
+            splice_app_boot_internal_modules(
+                "function internalModules() {\n\tconst x = loadSomethingElse();\n}"
+            )
+            .is_err(),
+            "锚点丢失应报错而非静默跳过",
+        );
+    }
+
+    #[test]
+    fn dsh_package_path_from_prefers_nested_then_hoisted() {
+        // alpha.2 起 npm 把 node-pty/sharp 等 hoist 到全局顶层；经典布局仍优先私有路径。
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let hoisted = root.join("lib/node_modules/@deepseek-ai/node-pty");
+        fs::create_dir_all(&hoisted).unwrap();
+        assert_eq!(
+            dsh_package_path_from(root, "node-pty"),
+            hoisted,
+            "仅 hoist 时应命中全局路径",
+        );
+        let nested = root.join("lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            dsh_package_path_from(root, "node-pty"),
+            nested,
+            "私有路径存在时优先私有路径",
+        );
+        let scoped_hoisted = root.join("lib/node_modules/@deepseek-ai/dsh-tool-fs-search");
+        fs::create_dir_all(&scoped_hoisted).unwrap();
+        assert_eq!(
+            dsh_package_path_from(root, "@deepseek-ai/dsh-tool-fs-search"),
+            scoped_hoisted,
+            "scoped 包名应去前缀后解析",
+        );
+    }
+
+    #[test]
+    fn attachment_local_accepts_lazy_sharp_shape() {
+        // 0.1.6-alpha.2 起 sharp 改为 createLazyRequire 懒加载，不再有静态 import；
+        // 这种形态 import 期已安全，不应报错。
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let path =
+            home.join(".dsh/profiles/node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "import { createLazyRequire } from \"@deepseek-ai/dsh-lazy-require\";\nconst requireSharp = createLazyRequire(\"sharp\", import.meta.url);\nconst sharp = requireSharp();\nasync function probe(data) {\n\treturn await imageMetadata(sharp(data, {}));\n}\n",
+        )
+        .unwrap();
+        patch_attachment_local(home).expect("lazy sharp must be accepted without patch");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("createLazyRequire(\"sharp\""),
+            "懒加载形态不应被改写",
+        );
     }
 }
