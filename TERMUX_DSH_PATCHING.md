@@ -44,6 +44,9 @@
 | 13 | profile 沙箱适配 | `~/.dsh/profiles/{web,headless}/cordis.patch.yml` | `dsh-sandbox-local`（disabled 行） | 只禁 sandbox-local；**勿禁 bash-sandbox**（sandboxMode 唯一提供者，禁了 permission 守卫 fatal）；**勿插 bare bash-local**（抢 shell 位且无 sandboxMode，同样 fatal） |
 | 14 | .bashrc 助手 | `~/.bashrc` | `dsh-open()` | `dsh-url`（取 token 链接）、`dsh-open`（一键跳浏览器）、`dsh()` 防重守卫 |
 | 15 | app-boot 内部模块回退 | prefix 下 `dsh-app-boot/lib/index.js`（经 hoist 解析） | `Termux/bionic internalModules fallback` | 0.1.6-alpha.2 起 host preparation 顶层直连 `node-addon-require-builtin` 原生绑定；该包无 android-arm64 且 fail closed。dsh 恒带 `--expose-internals`，回退走 plain createRequire，直达同一批内部模块（下游 shape 校验照常）。0.1.5 及更早无此机制，补丁与 doctor 均为 n/a |
+| 16 | task-board 轮询降频 | `~/.dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js` | `SESSION_POLL_MS = 3e4` | 上游默认 5s 全量扫描所有 session（逐个解压首帧读 header），空闲期持续吃 CPU/IO 且随会话数线性恶化；降到 30s。第三方插件缺失时容忍（n/a） |
+| 17 | lazy-view 插件部署 | `~/.dsh/profiles/web/node_modules/@240xu/dsh-session-lazy-view/`（registry tarball 解包） | `lib/index.js` 含 `readTailFrames` | 自研惰性会话查看器（npm `@240xu/dsh-session-lazy-view`）：只解压尾部 zstd 帧看大会话，不触发全量 fromRestore。部署器同步注册三件套：profile package.json（deps+bundles）、pnpm-lock.yaml（importer+packages，外科手术式，本机 OpenViking git 依赖拉不动 pnpm 全量安装）、.package-map.json |
+| 18 | web 堆上限 512M | `~/.bashrc` dsh() 守卫内 | `--max-old-space-size=512` | 实测堆峰值 678M（大 session 解压）触发内核换出 300M+ 到 swap 造成毛刺；`dsh web` 启动时注入 NODE_OPTIONS，逼早 GC。无守卫时跳过（守卫由 #14 安装） |
 
 全局树与 profile 树的关键文件多为**同一 inode 硬链接**（改一边等于改两边）；npm 重装会同时洗掉两侧。
 

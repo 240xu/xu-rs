@@ -147,7 +147,7 @@ sv restart spec-serve # 重启（改配置后）
 
 ## 技术文档
 
-- [TERMUX_DSH_PATCHING.md](TERMUX_DSH_PATCHING.md) — DSH Termux 兼容补丁链：14 项补丁的锚点/标记/恢复方式、`spec doctor` 漂移检测、dsh web 原生运维、已知故障模式速查
+- [TERMUX_DSH_PATCHING.md](TERMUX_DSH_PATCHING.md) — DSH Termux 兼容补丁链：18 项补丁的锚点/标记/恢复方式、`spec doctor` 漂移检测、dsh web 原生运维、已知故障模式速查
 - [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) — GitHub Release + npm 发版手册：版本三层解耦、资产契约、缓存破坏位、E2E 验证、Git Data API 推送降级
 
 ## 开发

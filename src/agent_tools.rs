@@ -643,6 +643,9 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     patch_apiproxy_termux_open()?;
     patch_frontend_cache_headers()?;
     patch_dsh_web_wrapper(home)?;
+    patch_task_board_poll(home)?;
+    patch_dsh_heap_cap(home)?;
+    deploy_lazy_view_plugin(home)?;
 
     log.push_str("[8/8] 验证 headless 启动...\n");
     let out =
@@ -696,6 +699,243 @@ fn dsh_package_path_from(prefix: &Path, package: &str) -> PathBuf {
 
 fn dsh_package_path(package: &str) -> PathBuf {
     dsh_package_path_from(&prefix(), package)
+}
+
+/// 第三方 task-board 面板每 5 秒全量扫描所有 session（逐个打开解压首帧），
+/// 空闲期持续吃 CPU/IO 且随会话数线性恶化（实测 2026-09-19）。降到 30s：
+/// 看板场景刷新延迟可接受。插件缺失时容忍（n/a），未知形态报错。
+fn patch_task_board_poll(home: &Path) -> Result<(), String> {
+    let path = home
+        .join(".dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    match splice_task_board_poll(&content) {
+        Ok(None) => Ok(()),
+        Ok(Some(fixed)) => atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string()),
+        Err(()) => Err("task-board SESSION_POLL_MS 标记未找到（插件内部变更？）".to_string()),
+    }
+}
+
+fn splice_task_board_poll(content: &str) -> Result<Option<String>, ()> {
+    if content.contains("SESSION_POLL_MS = 3e4") {
+        return Ok(None);
+    }
+    if content.contains("SESSION_POLL_MS = 5e3") {
+        return Ok(Some(
+            content.replace("SESSION_POLL_MS = 5e3", "SESSION_POLL_MS = 3e4"),
+        ));
+    }
+    Err(())
+}
+
+/// Termux 12G 内存实测：dsh web 堆峰值 678M（大 session 解压），内核把 300M+
+/// 匿名页压进 swap 造成换入毛刺。给 `dsh web` 启动注入 512M 堆上限：
+/// 保留 ~25% 余量并逼 GC 提前回收解压缓冲。只作用于 web 启动；无守卫时跳过
+/// （守卫本身由 patch_dsh_web_wrapper 安装）。
+fn patch_dsh_heap_cap(home: &Path) -> Result<(), String> {
+    let bashrc = home.join(".bashrc");
+    let Ok(content) = fs::read_to_string(&bashrc) else {
+        return Ok(());
+    };
+    if content.contains("--max-old-space-size=512") {
+        return Ok(());
+    }
+    let anchor = "dsh() {\n  if [ \"$1\" = \"web\" ] && curl";
+    let Some(idx) = content.find(anchor) else {
+        return Ok(());
+    };
+    let inject = "dsh() {\n  # Termux: 堆上限 512M——峰值曾达 678M 触发系统换出；单实例 web 足够并逼早 GC\n  if [ \"$1\" = \"web\" ]; then export NODE_OPTIONS=\"--max-old-space-size=512\"; fi\n  if [ \"$1\" = \"web\" ] && curl";
+    let fixed = format!("{}{}", inject, &content[idx + anchor.len()..]);
+    let fixed = format!("{}{}", &content[..idx], fixed);
+    atomic_write(&bashrc, fixed.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// 注册 @240xu/dsh-session-lazy-view（我们自己的惰性会话查看器插件，0.1.1+）：
+/// profile package.json 的 dependencies + dsh.profile.bundles 两处（挂载契约），
+/// pnpm-lock.yaml 的 importer + packages 两段（解析契约）。全部幂等。
+const LAZY_VIEW_NAME: &str = "@240xu/dsh-session-lazy-view";
+const LAZY_VIEW_VERSION: &str = "0.1.1";
+const LAZY_VIEW_INTEGRITY: &str = "sha512-rturGqWY7lEtRQadF0aPaEBrGEZVvPFAET7Fr145IhEyox4gDJU2f60EauK97fGczSGyFGqbGCefTEUNynP5NA==";
+
+fn splice_lockfile_lazy_view(
+    content: &str,
+    version: &str,
+    integrity: &str,
+) -> Result<Option<String>, ()> {
+    let name = format!("      '{}':\n", LAZY_VIEW_NAME);
+    if content.contains(&format!("  '{}@{}':\n", LAZY_VIEW_NAME, version)) {
+        return Ok(None);
+    }
+    let mut out = content.to_string();
+    // importer 段：优先升已知旧版本，否则插到 websearch 前
+    for old_ver in ["0.1.0"] {
+        let old_entry = format!(
+            "{}        specifier: {}\n        version: {}\n",
+            name, old_ver, old_ver
+        );
+        let new_entry = format!(
+            "{}        specifier: {}\n        version: {}\n",
+            name, version, version
+        );
+        if out.contains(&old_entry) {
+            out = out.replace(&old_entry, &new_entry);
+        }
+    }
+    if !out.contains(&format!("{}        specifier:", name)) {
+        let anchor = "      '@240xu/dsh-websearch':";
+        let Some(idx) = out.find(anchor) else {
+            return Err(());
+        };
+        let entry = format!(
+            "{}        specifier: {}\n        version: {}\n",
+            name, version, version
+        );
+        out.insert_str(idx, &entry);
+    }
+    // packages 段：删除任意旧版本条目（integrity 可能未知），再插目标条目
+    {
+        let mut lines: Vec<&str> = out.lines().collect();
+        let mut cleaned: Vec<&str> = Vec::with_capacity(lines.len());
+        let pkg_prefix = format!("  '{}@", LAZY_VIEW_NAME);
+        let mut i = 0;
+        while i < lines.len() {
+            if lines[i].starts_with(&pkg_prefix)
+                && !lines[i].starts_with(&format!("  '{}@{}':", LAZY_VIEW_NAME, version))
+            {
+                // 跳过该条目块（键行 + resolution 行 + engines 行 + 空行）
+                i += 1;
+                while i < lines.len()
+                    && (lines[i].starts_with("    ") || lines[i].trim().is_empty())
+                {
+                    i += 1;
+                }
+                // 回退多吞的空行归属下一块
+                if cleaned.last().is_some_and(|l| !l.trim().is_empty()) {
+                    cleaned.push("");
+                }
+                continue;
+            }
+            cleaned.push(lines[i]);
+            i += 1;
+        }
+        out = cleaned.join("\n");
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if !out.contains(&format!("  '{}@{}':\n", LAZY_VIEW_NAME, version)) {
+        let anchor = "  dsh-chat-import@0.11.0:";
+        let Some(idx) = out.find(anchor) else {
+            return Err(());
+        };
+        let pkg = format!(
+            "  '{}@{}':\n    resolution: {{integrity: {}}}\n\n",
+            LAZY_VIEW_NAME, version, integrity
+        );
+        out.insert_str(idx, &pkg);
+    }
+    Ok(Some(out))
+}
+
+/// package.json（deps+bundles）+ lockfile + .package-map.json 三处注册，幂等。
+/// 物理目录由 deploy 负责（已存在则不动）。
+fn ensure_lazy_view_registration(home: &Path) -> Result<(), String> {
+    let profile = home.join(".dsh/profiles/web");
+    let pj = profile.join("package.json");
+    if pj.exists() {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&pj).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        doc["dependencies"][LAZY_VIEW_NAME] =
+            serde_json::Value::String(LAZY_VIEW_VERSION.to_string());
+        let bundles = doc["dsh"]["profile"]["bundles"]
+            .as_array_mut()
+            .ok_or("profile package.json 无 bundles 数组")?;
+        if !bundles.iter().any(|v| v.as_str() == Some(LAZY_VIEW_NAME)) {
+            bundles.push(serde_json::Value::String(LAZY_VIEW_NAME.to_string()));
+        }
+        atomic_write(&pj, doc.to_string().as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let lock = profile.join("pnpm-lock.yaml");
+    if lock.exists() {
+        let content = fs::read_to_string(&lock).map_err(|e| e.to_string())?;
+        match splice_lockfile_lazy_view(&content, LAZY_VIEW_VERSION, LAZY_VIEW_INTEGRITY) {
+            Ok(None) => {}
+            Ok(Some(fixed)) => atomic_write(&lock, fixed.as_bytes()).map_err(|e| e.to_string())?,
+            Err(()) => return Err("pnpm-lock.yaml 锚点未找到（结构变更？）".to_string()),
+        }
+    }
+    let map = profile.join("node_modules/.package-map.json");
+    if map.exists() {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&map).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if let Some(pkgs) = doc["packages"].as_object_mut() {
+            for value in pkgs.values_mut() {
+                if let Some(deps) = value["dependencies"].as_object_mut() {
+                    deps.insert(
+                        LAZY_VIEW_NAME.to_string(),
+                        serde_json::Value::String(LAZY_VIEW_NAME.to_string()),
+                    );
+                    break;
+                }
+            }
+        }
+        atomic_write(&map, doc.to_string().as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 部署 @240xu/dsh-session-lazy-view 到 web profile（幂等）：物理目录存在且
+/// 版本不低于目标 → 只补注册；否则 npm pack 从 registry 拉取并解包。
+fn deploy_lazy_view_plugin(home: &Path) -> Result<(), String> {
+    let dir = home
+        .join(".dsh/profiles/web/node_modules")
+        .join(LAZY_VIEW_NAME);
+    let installed_ok = dir.join("lib/index.js").exists()
+        && fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|p| p["version"].as_str().map(str::to_string))
+            .is_some_and(|v| crate::agent_tools::compare_versions(&v, LAZY_VIEW_VERSION) >= 0);
+    if !installed_ok {
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let tmp = std::env::temp_dir().join(format!("lazyview-pack-{}", std::process::id()));
+        fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+        let spec = format!("{}@{}", LAZY_VIEW_NAME, LAZY_VIEW_VERSION);
+        let packed = run_capture(
+            "npm",
+            &[
+                "pack",
+                "--pack-destination",
+                tmp.to_string_lossy().as_ref(),
+                &spec,
+            ],
+            180,
+        )
+        .map_err(|e| format!("npm pack {spec} 失败：{e}"))?;
+        let tgz = packed
+            .lines()
+            .rev()
+            .find(|l| l.trim().ends_with(".tgz"))
+            .map(|l| l.trim().to_string())
+            .ok_or("npm pack 未输出 tgz 路径")?;
+        run_capture(
+            "tar",
+            &[
+                "-xzf",
+                &tgz,
+                "-C",
+                dir.to_string_lossy().as_ref(),
+                "--strip-components=1",
+            ],
+            120,
+        )
+        .map_err(|e| format!("解包 {tgz} 失败：{e}"))?;
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    ensure_lazy_view_registration(home)
 }
 
 fn patch_permission_presets(home: &Path) -> Result<(), String> {
@@ -1051,6 +1291,26 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         ".bashrc dsh-url/dsh-open",
         &home.join(".bashrc"),
         "dsh-open()",
+    );
+    check(
+        &mut out,
+        "task-board 轮询降频",
+        &home.join(
+            ".dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js",
+        ),
+        "SESSION_POLL_MS = 3e4",
+    );
+    check(
+        &mut out,
+        "lazy-view 插件",
+        &home.join(".dsh/profiles/web/node_modules/@240xu/dsh-session-lazy-view/lib/index.js"),
+        "readTailFrames",
+    );
+    check(
+        &mut out,
+        "web 堆上限 512M",
+        &home.join(".bashrc"),
+        "--max-old-space-size=512",
     );
 
     // node-pty: 真编产物 或 stub 二者有其一即视为可用
@@ -2529,6 +2789,145 @@ mod tests {
         assert!(
             content.contains("createLazyRequire(\"sharp\""),
             "懒加载形态不应被改写",
+        );
+    }
+
+    #[test]
+    fn task_board_poll_patch_applies_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let path = home.join(
+            ".dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js",
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "const SESSION_POLL_MS = 5e3;\nsetInterval(poll, SESSION_POLL_MS);\n",
+        )
+        .unwrap();
+
+        patch_task_board_poll(home).unwrap();
+        let once = fs::read_to_string(&path).unwrap();
+        assert!(once.contains("SESSION_POLL_MS = 3e4"), "应降频到 30s");
+
+        patch_task_board_poll(home).unwrap();
+        assert_eq!(once, fs::read_to_string(&path).unwrap(), "幂等");
+    }
+
+    #[test]
+    fn task_board_poll_patch_tolerates_absent_and_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // 插件未装：容忍（第三方插件，n/a 语义）
+        patch_task_board_poll(home).expect("absent plugin must be tolerated");
+        let path = home.join(
+            ".dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js",
+        );
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "const OTHER = 1;\n").unwrap();
+        assert!(patch_task_board_poll(home).is_err(), "未知形态应报错");
+    }
+
+    #[test]
+    fn heap_cap_inserts_into_existing_guard_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::write(
+            home.join(".bashrc"),
+            "dsh() {\n  if [ \"$1\" = \"web\" ] && curl -s -o /dev/null -m 2 http://127.0.0.1:3080/ 2>/dev/null; then\n    return 0\n  fi\n  command dsh \"$@\"\n}\n",
+        )
+        .unwrap();
+
+        patch_dsh_heap_cap(home).unwrap();
+        let once = fs::read_to_string(home.join(".bashrc")).unwrap();
+        assert!(
+            once.contains("--max-old-space-size=512"),
+            "应在守卫内注入堆上限"
+        );
+        assert!(once.contains("command dsh \"$@\""), "原有守卫透传应保留");
+
+        patch_dsh_heap_cap(home).unwrap();
+        assert_eq!(
+            once.matches("--max-old-space-size").count(),
+            fs::read_to_string(home.join(".bashrc"))
+                .unwrap()
+                .matches("--max-old-space-size")
+                .count(),
+            "幂等：注入恰好一次"
+        );
+    }
+
+    #[test]
+    fn heap_cap_skips_when_no_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::write(home.join(".bashrc"), "alias ll='ls -l'\n").unwrap();
+        patch_dsh_heap_cap(home).expect("no guard => tolerated no-op");
+        assert!(
+            !fs::read_to_string(home.join(".bashrc"))
+                .unwrap()
+                .contains("max-old-space"),
+            "无守卫时不应注入"
+        );
+    }
+
+    #[test]
+    fn lockfile_splice_adds_and_upgrades_lazy_view_entries() {
+        let fixture = "importers:\n\n  .:\n    dependencies:\n      '@240xu/dsh-websearch':\n        specifier: link:/x\n        version: link:/x\n\npackages:\n\n  dsh-chat-import@0.11.0:\n    resolution: {integrity: sha512-old}\n";
+        // 新增
+        let added = splice_lockfile_lazy_view(fixture, "0.1.1", "sha512-abc")
+            .expect("fixture must match")
+            .expect("unpatched must produce output");
+        assert!(added.contains("'@240xu/dsh-session-lazy-view@0.1.1'"));
+        assert!(added.contains("sha512-abc"));
+        // 幂等（已是目标版本）
+        assert!(splice_lockfile_lazy_view(&added, "0.1.1", "sha512-abc")
+            .expect("patched must parse")
+            .is_none());
+        // 旧版本升级 0.1.0 -> 0.1.1
+        let old = added.replace("0.1.1", "0.1.0");
+        let upgraded = splice_lockfile_lazy_view(&old, "0.1.1", "sha512-abc")
+            .expect("upgrade path must match")
+            .expect("upgrade must produce output");
+        assert!(upgraded.contains("@0.1.1"));
+        assert!(!upgraded.contains("@240xu/dsh-session-lazy-view@0.1.0"));
+        assert!(
+            splice_lockfile_lazy_view("totally unrelated", "0.1.1", "x").is_err(),
+            "锚点丢失应报错"
+        );
+    }
+
+    #[test]
+    fn profile_manifest_registration_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let pj = home.join(".dsh/profiles/web/package.json");
+        fs::create_dir_all(pj.parent().unwrap()).unwrap();
+        fs::write(
+            &pj,
+            "{\"name\":\"dsh-profile-web\",\"dependencies\":{},\"dsh\":{\"profile\":{\"bundles\":[\"@deepseek-ai/dsh-base\"]}}}",
+        )
+        .unwrap();
+
+        ensure_lazy_view_registration(home).unwrap();
+        let once: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&pj).unwrap()).unwrap();
+        assert_eq!(
+            once["dependencies"]["@240xu/dsh-session-lazy-view"],
+            "0.1.1"
+        );
+        assert!(once["dsh"]["profile"]["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "@240xu/dsh-session-lazy-view"));
+
+        ensure_lazy_view_registration(home).unwrap();
+        let twice = fs::read_to_string(&pj).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&twice).unwrap(),
+            once,
+            "重复注册不应改变内容"
         );
     }
 }
