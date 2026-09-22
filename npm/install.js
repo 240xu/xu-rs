@@ -16,20 +16,27 @@ const REPO = "240xu/xu-rs";
 // decoupled from VERSION: the npm wrapper can be republished (installer fixes,
 // docs) without rebuilding the Rust binary. Bump only when a new GitHub Release
 // asset is cut.
-const BIN_VERSION = "0.1.0";
+const BIN_VERSION = "0.1.2";
 
 // sha256 of the release tarballs, from dist/SHA256SUMS at release time.
 const CHECKSUMS = {
   "trivium-0.1.0-android-aarch64.tar.gz":
     "3e4a41efdffa7d28b84ef8b660f7b532c18e956e0dea7c17ab813f4504282038",
+  "trivium-0.1.2-android-aarch64.tar.gz":
+    "c70c3e03a0ae47391bf924d373b5957e7e1c26354a0a5dc0a987b0071e4c6efb",
 };
 
-// GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
-const ASSET_ID = "547284461";
+// Fallback GitHub Release asset ids (used when the CDN direct link fails and
+// the releases API endpoint is hit; anonymous API calls are rate-limited).
+const LEGACY_ASSET_IDS = {
+  "0.1.0": "547284461",
+  "0.1.2": "580914905",
+};
+const ASSET_ID = LEGACY_ASSET_IDS[BIN_VERSION];
 
 // Expected byte size of the tarball; guards against truncated / HTML error pages
 // being accepted as a valid download.
-const EXPECTED_SIZE = 4407493;
+const EXPECTED_SIZE = 4398097;
 
 function assetForPlatform() {
   const plat = process.platform; // 'android' on Termux, 'linux', 'darwin', 'win32'
