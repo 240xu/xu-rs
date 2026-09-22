@@ -671,7 +671,8 @@ fn ensure_dsh_shebang(log: &mut String) -> Result<(), String> {
         return Ok(());
     }
     let (_, rest) = content.split_once('\n').unwrap_or((&content, ""));
-    let fixed = "#!/data/data/com.termux/files/usr/bin/node --expose-internals\n".to_string() + rest;
+    let fixed =
+        "#!/data/data/com.termux/files/usr/bin/node --expose-internals\n".to_string() + rest;
     atomic_write(&bin_js, fixed.as_bytes()).map_err(|e| e.to_string())?;
     // atomic_write 落盘为 600，bin.js 需要可执行位
     let mut perms = fs::metadata(&bin_js)
@@ -708,7 +709,8 @@ fn patch_session_persistence(home: &Path) -> Result<(), String> {
     let link_new_v1 = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
     let imp_old_v2 = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from \"node:fs/promises\";";
     let imp_new_v2 = "import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from \"node:fs/promises\";";
-    let link_old_v2 = "\t\ttry {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t} finally {";
+    let link_old_v2 =
+        "\t\ttry {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t} finally {";
     let link_new_v2 = "\t\ttry {\n\t\t\tawait link(tmp, finalPath);\n\t\t\tlinked = true;\n\t\t} catch (error) {\n\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} else throw error;\n\t\t} finally {";
     let variants: [(&str, &str, &str, &str); 2] = [
         (imp_old_v1, imp_new_v1, link_old_v1, link_new_v1),
@@ -790,7 +792,7 @@ fn patch_attachment_local(home: &Path) -> Result<(), String> {
     }
     let stub = "let sharp;\ntry {\n\tsharp = (await import(\"sharp\")).default;\n} catch {\n\tsharp = (...args) => {\n\t\tthrow new AttachmentError(\"sharp is unavailable on this platform.\", \"UNSUPPORTED_PLATFORM\");\n\t};\n}\n";
     let fixed = content.replace(imp_old, stub);
-    return atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string());
+    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Termux fix: dsh-host-apiproxy's native path opener only has darwin/win32/linux
@@ -830,7 +832,9 @@ fn patch_apiproxy_termux_open() -> Result<(), String> {
 fn patch_subprocess_local() -> Result<(), String> {
     // 0.1.2：锚点在 index.js；0.1.3+：移入 runner-launch-<hash>.js chunk
     //（文件名带内容 hash，需 glob 匹配）。
-    let lib_dir = prefix().join("lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-subprocess-local/lib");
+    let lib_dir = prefix().join(
+        "lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-subprocess-local/lib",
+    );
     let mut paths = vec![lib_dir.join("index.js")];
     if let Ok(rd) = fs::read_dir(&lib_dir) {
         for entry in rd.flatten() {
@@ -882,9 +886,11 @@ fn patch_fs_search() -> Result<(), String> {
             v.push(home.join(format!(
                 ".dsh/profiles/{profile}/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
             )));
-            v.push(home.join(format!(
-                ".dsh/profiles/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
-            )));
+            v.push(
+                home.join(
+                    ".dsh/profiles/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js",
+                ),
+            );
         }
         v
     };
@@ -1676,8 +1682,7 @@ impl InstallLock {
                     .create_new(true)
                     .open(path)
                     .map_err(|e| format!("lock contention on {}: {e}", path.display()))
-            })
-            .map_err(|e| e)?;
+            })?;
         use std::io::Write;
         let _ = file.write_all(std::process::id().to_string().as_bytes());
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).ok();
