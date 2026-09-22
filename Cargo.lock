@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "trivium"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64",
  "chrono",
