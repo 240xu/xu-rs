@@ -554,11 +554,28 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     if !force {
         if let (Some(current), Some(target)) = (old_version.as_deref(), target_version.as_deref()) {
             if current == target {
+                // 版本一致也可能缺补丁（npm 部分失败 / 手动装过）。补丁齐就真跳过；
+                // 有缺口则只走 [8/8]，不重跑 npm 安装。
+                let gaps: Vec<_> = dsh_patch_status(home)
+                    .into_iter()
+                    .filter(|(_, status, _)| status != "ok")
+                    .collect();
+                if gaps.is_empty() {
+                    log.push_str(&format!(
+                        "[4/8] 已是最新 {current}，补丁齐全，跳过安装（需要强制重装可加 --force）\n"
+                    ));
+                    log.push_str("== DeepSeek Harness 完成：已是最新 ==\n");
+                    return Ok(log);
+                }
+                let names = gaps
+                    .iter()
+                    .map(|(name, _, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、");
                 log.push_str(&format!(
-                    "[4/8] 已是最新 {current}，跳过安装（需要强制重装可加 --force）\n"
+                    "[4/8] 已是最新 {current}，但补丁有缺口（{names}），仅补丁不重装\n"
                 ));
-                log.push_str("== DeepSeek Harness 完成：已是最新 ==\n");
-                return Ok(log);
+                return apply_dsh_patches_only(home, &mut log);
             }
         }
     } else {
@@ -645,6 +662,8 @@ fn install_dsh(home: &Path) -> Result<String, String> {
     patch_dsh_web_wrapper(home)?;
     patch_task_board_poll(home)?;
     patch_dsh_heap_cap(home)?;
+    patch_require_builtin(home)?;
+    patch_settings_import_guard()?;
     deploy_lazy_view_plugin(home)?;
 
     log.push_str("[8/8] 验证 headless 启动...\n");
@@ -668,6 +687,39 @@ fn install_dsh(home: &Path) -> Result<String, String> {
         command_path("dsh").unwrap_or_else(|| "未知".to_string()),
     ));
     Ok(log)
+}
+
+/// 已是最新但补丁有缺口时：只跑 [8/8] 补丁套件，不重装。
+fn apply_dsh_patches_only(home: &Path, log: &mut String) -> Result<String, String> {
+    log.push_str("[8/8] 应用 Termux 兼容补丁（补缺口）...\n");
+    patch_permission_presets(home)?;
+    patch_session_persistence(home)?;
+    patch_app_boot_internal_modules()?;
+    patch_node_gyp()?;
+    rebuild_node_pty()?;
+    patch_attachment_local(home)?;
+    ensure_profile_patches(home)?;
+    patch_subprocess_local()?;
+    patch_fs_search()?;
+    patch_playwright_ld_preload(home)?;
+    patch_apiproxy_termux_open()?;
+    patch_frontend_cache_headers()?;
+    patch_dsh_web_wrapper(home)?;
+    patch_task_board_poll(home)?;
+    patch_dsh_heap_cap(home)?;
+    patch_require_builtin(home)?;
+    patch_settings_import_guard()?;
+    deploy_lazy_view_plugin(home)?;
+
+    let verify = "dsh --profile headless \"ping\" 2>&1";
+    let out = run_capture("sh", &["-c", verify], 120).unwrap_or_default();
+    if out.contains("Error:") && !out.contains("MISSING_CREDENTIAL") {
+        return Err(format!(
+            "{log}[8/8] 启动验证失败，请重跑 `spec agent install dsh --yes`\n{out}"
+        ));
+    }
+    log.push_str("== DeepSeek Harness 完成：补丁已补齐 ==\n");
+    Ok(log.clone())
 }
 
 fn dsh_tool() -> AgentTool {
@@ -938,61 +990,208 @@ fn deploy_lazy_view_plugin(home: &Path) -> Result<(), String> {
     ensure_lazy_view_registration(home)
 }
 
+/// 0.1.7-alpha: node-addon-require-builtin 无 android-arm64 绑定（host 启动必经）。
+/// dsh shebang 已带 --expose-internals，纯 require() 即可拿到 internal/* 模块，
+/// 原生绑定可整体 JS stub。同时兼容旧版 profiles bundle 路径。
+fn patch_require_builtin(home: &Path) -> Result<(), String> {
+    const STUB_MARKER: &str = "js-stub";
+    let content = "\"use strict\";\n\
+// Termux/bionic stub: no android-arm64 native binding for the internals\n\
+// loader. With --expose-internals (dsh shebang), plain require() reaches\n\
+// internal/* modules directly, so the native binding is unnecessary.\n\
+function requireBuiltin(moduleId) { return require(moduleId); }\n\
+function isAllowedInternalId(moduleId) {\n\
+  return typeof moduleId === \"string\" && moduleId.startsWith(\"internal/\");\n\
+}\n\
+function getBindingInfo() { return { backend: \"js-stub\", platform: \"android-arm64\" }; }\n\
+exports.requireBuiltin = requireBuiltin;\n\
+exports.isAllowedInternalId = isAllowedInternalId;\n\
+exports.getBindingInfo = getBindingInfo;\n\
+exports.default = { requireBuiltin, isAllowedInternalId, getBindingInfo };\n";
+    let targets = vec![
+        dsh_package_path_from(&prefix(), "node-addon-require-builtin").join("lib/index.js"),
+        profiles_node_modules(home).join("node-addon-require-builtin/lib/index.js"),
+    ];
+    let mut patched = 0usize;
+    for path in &targets {
+        if !path.exists() {
+            continue;
+        }
+        let current =
+            fs::read_to_string(path).map_err(|e| format!("require-builtin 读取失败：{e}"))?;
+        if current.contains(STUB_MARKER) {
+            patched += 1;
+            continue;
+        }
+        let backup = path.with_extension("js.bak-before-android-stub");
+        if !backup.exists() {
+            let _ = fs::copy(path, &backup);
+        }
+        atomic_write(path, content.as_bytes())
+            .map_err(|e| format!("require-builtin 写入失败：{e}"))?;
+        patched += 1;
+    }
+    if patched == 0 {
+        return Err("node-addon-require-builtin 未找到（dsh 未安装？）".to_string());
+    }
+    Ok(())
+}
+
 fn patch_permission_presets(home: &Path) -> Result<(), String> {
-    let path = profiles_node_modules(home).join("dsh-permission-presets/lib/index.js");
-    let content = fs::read_to_string(&path).map_err(|e| format!("permission-presets 缺失：{e}"))?;
-    if content.contains("sandboxMode === false") {
-        return Ok(());
+    // 0.1.7-alpha：profiles bundle 只剩 UI surface，host 代码在 dsh 包私有
+    // node_modules 里 → 两个候选路径都试，能补则补。
+    let candidates = vec![
+        profiles_node_modules(home).join("dsh-permission-presets/lib/index.js"),
+        dsh_package_path("dsh-permission-presets").join("lib/index.js"),
+    ];
+    let mut applied = 0usize;
+    let mut last_error = String::new();
+    for path in &candidates {
+        if !path.exists() {
+            continue;
+        }
+        let content = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                last_error = format!("permission-presets 读取失败 {path:?}：{error}");
+                continue;
+            }
+        };
+        if content.contains("sandboxMode === false") {
+            applied += 1;
+            continue;
+        }
+        let fixed = content.replace("sandboxMode === void 0", "sandboxMode === false");
+        if fixed == content {
+            last_error = "permission-presets 标记未找到（dsh 内部变更？）".to_string();
+            continue;
+        }
+        let backup = path.with_extension("js.bak-before-sandbox-patch");
+        if !backup.exists() {
+            let _ = fs::copy(path, &backup);
+        }
+        match atomic_write(path, fixed.as_bytes()) {
+            Ok(()) => applied += 1,
+            Err(error) => last_error = format!("permission-presets 写入失败：{error}"),
+        }
     }
-    let fixed = content.replace("sandboxMode === void 0", "sandboxMode === false");
-    if fixed == content {
-        return Err("permission-presets 标记未找到（dsh 内部变更？）".to_string());
+    if applied == 0 {
+        return Err(last_error);
     }
-    atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn patch_session_persistence(home: &Path) -> Result<(), String> {
-    let path = profiles_node_modules(home).join("dsh-session-persistence-jsonl/lib/index.js");
-    let mut content =
-        fs::read_to_string(&path).map_err(|e| format!("session-persistence 缺失：{e}"))?;
-    if !content.contains("error.code === \"EACCES\"") {
-        // 0.1.5 起 import 行多了 lstat：只保证 rename 存在，不硬编码整行。
-        if !content.contains("rename, rm,") {
-            let imp_fixed = content.replacen("realpath, rm,", "realpath, rename, rm,", 1);
-            if imp_fixed == content {
-                return Err("session-persistence import 标记未找到（dsh 内部变更？）".to_string());
+    // 0.1.5-rc.2：profiles bundle 副本；0.1.7-alpha：dsh 包私有 node_modules。
+    // 每个 Termux 修复点都定义 rc.2 与 alpha 两种锚点，命中其一即视为已修。
+    let candidates = vec![
+        profiles_node_modules(home).join("dsh-session-persistence-jsonl/lib/index.js"),
+        dsh_package_path("dsh-session-persistence-jsonl").join("lib/index.js"),
+    ];
+    let mut applied = 0usize;
+    let mut last_error = String::new();
+    for path in &candidates {
+        if !path.exists() {
+            continue;
+        }
+        let mut content = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                last_error = format!("session-persistence 读取失败：{error}");
+                continue;
             }
-            content = imp_fixed;
+        };
+        let original = content.clone();
+
+        // ── import rename（rc.2: "realpath, rm,"；alpha: "rm, stat, truncate"）──
+        if !content.contains("rename, rm,") && content.contains("realpath, rm,") {
+            content = content.replacen("realpath, rm,", "realpath, rename, rm,", 1);
         }
-        let link_old = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
-        let link_new = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
-        if !content.contains(link_old) {
-            return Err("session-persistence link 标记未找到（dsh 内部变更？）".to_string());
+        if !content.contains("rename, rm,") && content.contains("rm, stat, truncate") {
+            content = content.replacen("rm, stat, truncate", "rename, rm, stat, truncate", 1);
         }
-        content = content.replace(link_old, link_new);
+        // alpha import 形态：rm, stat（无 realpath 紧邻）
+        if !content.contains("rename, rm,") && content.contains("rm, stat, truncate") {
+            content = content.replacen("rm, stat, truncate", "rename, rm, stat, truncate", 1);
+        }
+
+        // ── flock 降级：rc.2 形态（返回 posix-unlocked lease）或 alpha 形态（fall-through）──
+        let has_flock_fix =
+            content.contains("posix-unlocked") || content.contains("Termux flock degrade");
+        if !has_flock_fix {
+            let flock_old = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;";
+            let flock_new = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\t// Termux/bionic (2026-09-12): 无 flock 绑定，无锁继续。\n\t\t\t\t\tif (error?.code === \"ERR_FLOCK_UNSUPPORTED_PLATFORM\") {\n\t\t\t\t\t\treturn new SessionWriteLease({\n\t\t\t\t\t\t\tkind: \"posix-unlocked\",\n\t\t\t\t\t\t\thandle\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\t\t\t\t\tthrow error;";
+            if content.contains(flock_old) {
+                content = content.replace(flock_old, flock_new);
+            }
+        }
+
+        // ── link→rename（rc.2 形态：tmp/finalPath；alpha 形态：带 v8 ignore 的 finally）──
+        let has_link_fix = content.contains("Termux link→rename degrade")
+            || content.contains("Termux/bionic (2026-09-12): 会话恢复写入");
+        if !has_link_fix && !content.contains("error.code === \"EACCES\"") {
+            // rc.2 形态
+            let link_old = "await link(tmp, finalPath);\n\t\t\tlinked = true;";
+            if content.contains(link_old) {
+                let link_new = "try {\n\t\t\t\tawait link(tmp, finalPath);\n\t\t\t\tlinked = true;\n\t\t\t} catch (error) {\n\t\t\t\tif (error.code === \"EACCES\" || error.code === \"EPERM\" || error.code === \"ENOSYS\") {\n\t\t\t\t\tawait rename(tmp, finalPath);\n\t\t\t\t\tlinked = true;\n\t\t\t\t} else throw error;\n\t\t\t}";
+                content = content.replace(link_old, link_new);
+            }
+        }
+        if !content.contains("Termux link→rename degrade") {
+            // alpha 形态：try{link}catch{} finally{rm}
+            let link_old = r#"			await link(tmp, finalPath);
+			linked = true;
+		} finally {
+			/* v8 ignore next -- link failure is the TOCTOU/IO race guarded above; not reachable in test */
+			if (!linked) await rm(tmp, { force: true });
+		}"#;
+            let link_new = r#"			await link(tmp, finalPath);
+			linked = true;
+		} catch (error) {
+			// Termux link→rename degrade (2026-09-22): hardlink hits EACCES on
+			// bionic; rename is equivalent for the single-writer session tree.
+			if (error?.code === "EACCES" || error?.code === "EPERM" || error?.code === "ENOSYS") {
+				await rename(tmp, finalPath);
+				linked = true;
+			}
+		} finally {
+			/* v8 ignore next -- link failure is the TOCTOU/IO race guarded above; not reachable in test */
+			if (!linked) await rm(tmp, { force: true });
+		}"#;
+            content = content.replacen(link_old, link_new, 1);
+        }
+
+        // ── publish rename（migration 发布硬链接 EACCES → rename）──
+        if !content.contains("rename(staged, currentPath)")
+            && !content.contains("Termux/bionic (2026-09-12): 硬链接 EACCES 则 rename 发布")
+        {
+            let pub_old = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\tthrow error;";
+            let pub_new = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\t// Termux/bionic (2026-09-12): 硬链接 EACCES 则 rename 发布。\n\t\tif (error?.code === \"EACCES\" || error?.code === \"EPERM\" || error?.code === \"ENOSYS\") {\n\t\t\tawait rename(staged, currentPath);\n\t\t} else throw error;";
+            if content.contains(pub_old) {
+                content = content.replace(pub_old, pub_new);
+            }
+        }
+
+        if content != original {
+            let backup = path.with_extension("js.bak-before-sandbox-patch");
+            if !backup.exists() {
+                let _ = fs::copy(path, &backup);
+            }
+            if let Err(error) = atomic_write(path, content.as_bytes()) {
+                last_error = format!("session-persistence 写入失败：{error}");
+                continue;
+            }
+        }
+        applied += 1;
     }
-    if !content.contains("posix-unlocked") {
-        // Termux/bionic (2026-09-12): node-addon-system 无 android-arm64 绑定，
-        // 会话恢复拿写锁直接炸（ERR_FLOCK_UNSUPPORTED_PLATFORM）。单用户设备：
-        // 降级为无锁继续，release() 照常关 fd。
-        let flock_old = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\tthrow error;";
-        let flock_new = "if (isLockContention(error)) throw new SessionAlreadyOwnedError(id);\n\t\t\t\t\t// Termux/bionic (2026-09-12): 无 flock 绑定，无锁继续。\n\t\t\t\t\tif (error?.code === \"ERR_FLOCK_UNSUPPORTED_PLATFORM\") {\n\t\t\t\t\t\treturn new SessionWriteLease({\n\t\t\t\t\t\t\tkind: \"posix-unlocked\",\n\t\t\t\t\t\t\thandle\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\t\t\t\t\tthrow error;";
-        if !content.contains(flock_old) {
-            return Err("session-persistence flock 标记未找到（dsh 内部变更？）".to_string());
-        }
-        content = content.replace(flock_old, flock_new);
+    if applied == 0 {
+        return Err(if last_error.is_empty() {
+            "session-persistence 未找到任何候选文件".to_string()
+        } else {
+            last_error
+        });
     }
-    if !content.contains("rename(staged, currentPath)") {
-        // Termux/bionic (2026-09-12): migration 发布用的硬链接在此文件系统上
-        // 报 EACCES；同目录 rename 原子且调用方容忍 staged 已消失。
-        let pub_old = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\tthrow error;";
-        let pub_new = "await internals.fs.link(staged, currentPath);\n\t} catch (error) {\n\t\t/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */\n\t\tif (isEEXIST(error)) return false;\n\t\t/* v8 ignore next -- the filesystem error is already complete. */\n\t\t// Termux/bionic (2026-09-12): 硬链接 EACCES 则 rename 发布。\n\t\tif (error?.code === \"EACCES\" || error?.code === \"EPERM\" || error?.code === \"ENOSYS\") {\n\t\t\tawait rename(staged, currentPath);\n\t\t} else throw error;";
-        if !content.contains(pub_old) {
-            return Err("session-persistence publish 标记未找到（dsh 内部变更？）".to_string());
-        }
-        content = content.replace(pub_old, pub_new);
-    }
-    atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn patch_node_gyp() -> Result<(), String> {
@@ -1222,6 +1421,18 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         &dsh_package_path("dsh-native-command").join("lib/index.js"),
         "termux-open",
     );
+    check(
+        &mut out,
+        "settings 导入守卫",
+        &dsh_package_path("dsh-settings").join("lib/index.js"),
+        "Termux settings-import guard",
+    );
+    check(
+        &mut out,
+        "require-builtin android stub",
+        &dsh_package_path("node-addon-require-builtin").join("lib/index.js"),
+        "js-stub",
+    );
     // app-boot 内部模块回退：0.1.5 无此机制 (n/a)；alpha 有锚点无标记 (DRIFT)；有标记 (ok)
     {
         let path = dsh_package_path("dsh-app-boot").join("lib/index.js");
@@ -1268,17 +1479,21 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         &home.join(".dsh/profiles/web/node_modules/dsh-archived-sessions/lib/index.js"),
         "vendored storage-row decoder",
     );
+    // websearch 0.1.5 兼容补丁已退役：0.1.7 起上游自带 installSection API
+    // 探测（typeof settings?.installSection === "function"），无需再打。
     check(
         &mut out,
-        "websearch 0.1.5 兼容",
+        "websearch settings 兼容(上游化)",
         &home.join(".dsh/profiles/web/node_modules/@240xu/dsh-websearch/lib/index.js"),
-        "settingsCtx.settings.installSection",
+        "typeof settings?.installSection",
     );
+    // sharp stub 补丁已退役：0.1.7 起上游改用 createLazyRequire 懒加载，
+    // import 期天然安全（我们在 0.1.6-alpha.2 适配时预判的路径已上游化）。
     check(
         &mut out,
-        "sharp import stub",
-        &dsh_package_path("sharp").join("dist/index.mjs"),
-        "Termux/bionic stub",
+        "sharp 懒加载(上游化)",
+        &dsh_package_path("dsh-attachment-local").join("lib/index.js"),
+        "createLazyRequire(\"sharp\"",
     );
     check(
         &mut out,
@@ -1306,11 +1521,22 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         &home.join(".dsh/profiles/web/node_modules/@240xu/dsh-session-lazy-view/lib/index.js"),
         "readTailFrames",
     );
+    // 堆上限检查改为跟随 bashrc 现值（另一会话管理此值，512→2048 已发生过；
+    // 只要有任意 max-old-space-size 注入即可，具体数值归运行策略管）。
     check(
         &mut out,
-        "web 堆上限 512M",
+        "web 堆上限(任意值)",
         &home.join(".bashrc"),
-        "--max-old-space-size=512",
+        "--max-old-space-size",
+    );
+    // kpad 守护自愈（2026-09-29）：该守护原本只是启动器（child 退出即撒手），
+    // 已改造为带退避的自愈 supervisor。文件在 opencode 配置区，可能被别的
+    // 会话重写——doctor 盯标记，丢了能看到。
+    check(
+        &mut out,
+        "dsh 守护自愈",
+        &home.join(".config/opencode/kpad-dsh-web.cjs"),
+        "scheduleRestart",
     );
 
     // node-pty: 真编产物 或 stub 二者有其一即视为可用
@@ -1339,6 +1565,47 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     );
 
     out
+}
+
+/// dsh 0.1.7-alpha：settings.yaml 是已淘汰的 legacy 文档，dsh-settings 每次启动
+/// 都会 rename+.imported 并把 sections 导进"当时启动的 profile"；被拒绝的 section
+/// 只留日志 = 用户眼里的"设置莫名丢失"。加 opt-in 守卫：默认跳过导入，
+/// 显式 DSH_IMPORT_LEGACY=1 才执行。供应商配置一律住 profile cordis.patch.yml。
+fn patch_settings_import_guard() -> Result<(), String> {
+    const MARKER: &str = "Termux settings-import guard";
+    const OLD: &str = r#"	async importLegacyDocument() {
+		const profile = this.ownerContext.profileContext;
+		const path = join(profile.home, "settings.yaml");
+		if (!existsSync(path)) return;"#;
+    const NEW: &str = r#"	async importLegacyDocument() {
+		// Termux settings-import guard (2026-09-22): legacy settings.yaml is a
+		// user-managed recovery surface. Silent per-boot rename+import scattered
+		// or dropped sections (rejected writes only logged). Import now requires
+		// explicit DSH_IMPORT_LEGACY=1; otherwise the document is left untouched.
+		if (process.env.DSH_IMPORT_LEGACY !== "1") {
+			this.ownerContext.logger?.warn?.("settings: legacy import skipped (set DSH_IMPORT_LEGACY=1 to import settings.yaml)");
+			return;
+		}
+		const profile = this.ownerContext.profileContext;
+		const path = join(profile.home, "settings.yaml");
+		if (!existsSync(path)) return;"#;
+    let path = dsh_package_path("dsh-settings").join("lib/index.js");
+    if !path.exists() {
+        return Err("dsh-settings 缺失（dsh 未安装？）".to_string());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("dsh-settings 读取失败：{e}"))?;
+    if content.contains(MARKER) {
+        return Ok(());
+    }
+    if !content.contains(OLD) {
+        return Err("dsh-settings import 锚点未找到（dsh 内部变更？）".to_string());
+    }
+    let backup = path.with_extension("js.bak-before-import-guard");
+    if !backup.exists() {
+        let _ = fs::copy(&path, &backup);
+    }
+    let fixed = content.replacen(OLD, NEW, 1);
+    atomic_write(&path, fixed.as_bytes()).map_err(|e| format!("dsh-settings 写入失败：{e}"))
 }
 
 /// Termux perf: serve /assets/ with immutable cache headers (vite emits
@@ -1798,6 +2065,24 @@ fn install_opencode_loader_assets(loader_dir: &Path) -> Result<(), String> {
 }
 
 fn install_opencode_launcher(home: &Path, target: &Path) -> Result<(), String> {
+    // OpenCode v2 cutover (2026-09-23): the shimmed v2 binary plus a CUTOVER
+    // marker opts opencode into v2; v1 stays reachable as opencode1. Removing
+    // the marker reverts the launcher to v1.
+    let v2_bin = home.join(".local/share/xucodex/opencode2/bin/opencode2-xu-termux");
+    let cutover = home.join(".local/share/xucodex/opencode2/CUTOVER");
+    if v2_bin.exists() && cutover.exists() {
+        let v2_script = format!(
+        "#!/bin/sh\n# Xu managed OpenCode v2 (beta) launcher - shimmed Termux build.\nexec \"{}\" \"$@\"\n",
+            v2_bin.display()
+        );
+        install_launchers(home, "opencode", &v2_script)?;
+        let v1_script = format!(
+            "#!/bin/sh\n# Xu managed OpenCode v1 launcher (rollback entry).\nexec \"{}\" \"$@\n",
+            target.display()
+        );
+        install_launchers(home, "opencode1", &v1_script)?;
+        return Ok(());
+    }
     let script = format!(
         "#!/bin/sh\n# Xu managed OpenCode launcher.\nexec \"{}\" \"$@\"\n",
         target.display()
@@ -1986,7 +2271,15 @@ fn latest_version(tool: AgentTool) -> Result<String, String> {
     // DSH 有 alpha 通道超前于 latest 时，取两者最大值（避免 latest 滞后导致误判“已是最新”）
     if tool.id == AgentToolId::Dsh {
         if let Ok(out) = run_capture("npm", &["view", package, "dist-tags", "--json"], 30) {
-            if let Ok(tags) = serde_json::from_str::<serde_json::Value>(&out) {
+            if let Ok(mut tags) = serde_json::from_str::<serde_json::Value>(&out) {
+                // npmmirror 对 dist-tags 会数组包一层（[{...}]），兼容两种形态
+                if tags.is_array() {
+                    tags = tags
+                        .as_array()
+                        .and_then(|items| items.iter().find(|v| v.is_object()))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                }
                 let mut candidates = Vec::new();
                 for tag in ["alpha", "next", "latest"] {
                     if let Some(v) = tags.get(tag).and_then(|v| v.as_str()) {
