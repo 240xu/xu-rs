@@ -782,22 +782,25 @@ fn splice_task_board_poll(content: &str) -> Result<Option<String>, ()> {
 }
 
 /// Termux 12G 内存实测：dsh web 堆峰值 678M（大 session 解压），内核把 300M+
-/// 匿名页压进 swap 造成换入毛刺。给 `dsh web` 启动注入 512M 堆上限：
-/// 保留 ~25% 余量并逼 GC 提前回收解压缓冲。只作用于 web 启动；无守卫时跳过
-/// （守卫本身由 patch_dsh_web_wrapper 安装）。
+/// 匿名页压进 swap 造成换入毛刺。给 `dsh web` 启动注入堆上限。数值随运行策略
+/// 演进（512→1024→2048，2026-09-27 定 2048）：512 在 09-26 造成过 OOM 自杀
+/// 循环，新注入一律用 2048；任何既有注入（任意值）都尊重，不重复写。只作用于
+/// web 启动；无守卫时跳过（守卫本身由 patch_dsh_web_wrapper 安装，其新一代
+/// 模板自带 2048，本函数仅兜底旧形态守卫）。
 fn patch_dsh_heap_cap(home: &Path) -> Result<(), String> {
     let bashrc = home.join(".bashrc");
     let Ok(content) = fs::read_to_string(&bashrc) else {
         return Ok(());
     };
-    if content.contains("--max-old-space-size=512") {
+    // 任意既有注入都算数——数值归运行策略管（doctor 同口径）。
+    if content.contains("--max-old-space-size") {
         return Ok(());
     }
     let anchor = "dsh() {\n  if [ \"$1\" = \"web\" ] && curl";
     let Some(idx) = content.find(anchor) else {
         return Ok(());
     };
-    let inject = "dsh() {\n  # Termux: 堆上限 512M——峰值曾达 678M 触发系统换出；单实例 web 足够并逼早 GC\n  if [ \"$1\" = \"web\" ]; then export NODE_OPTIONS=\"--max-old-space-size=512\"; fi\n  if [ \"$1\" = \"web\" ] && curl";
+    let inject = "dsh() {\n  # Termux: 堆上限 2048M——512 注入曾引发 OOM 自杀循环（2026-09-26），对齐运行策略；再撞上限改查泄漏\n  if [ \"$1\" = \"web\" ]; then export NODE_OPTIONS=\"--max-old-space-size=2048\"; fi\n  if [ \"$1\" = \"web\" ] && curl";
     let fixed = format!("{}{}", inject, &content[idx + anchor.len()..]);
     let fixed = format!("{}{}", &content[..idx], fixed);
     atomic_write(&bashrc, fixed.as_bytes()).map_err(|e| e.to_string())
@@ -820,11 +823,11 @@ fn splice_lockfile_lazy_view(
         return Ok(None);
     }
     let mut out = content.to_string();
-    // importer 段：优先升已知旧版本，否则插到 websearch 前
-    for old_ver in ["0.1.0"] {
+    // importer 段：优先升已知旧版本（0.1.0），否则插到 websearch 前
+    {
         let old_entry = format!(
             "{}        specifier: {}\n        version: {}\n",
-            name, old_ver, old_ver
+            name, "0.1.0", "0.1.0"
         );
         let new_entry = format!(
             "{}        specifier: {}\n        version: {}\n",
@@ -847,7 +850,7 @@ fn splice_lockfile_lazy_view(
     }
     // packages 段：删除任意旧版本条目（integrity 可能未知），再插目标条目
     {
-        let mut lines: Vec<&str> = out.lines().collect();
+        let lines: Vec<&str> = out.lines().collect();
         let mut cleaned: Vec<&str> = Vec::with_capacity(lines.len());
         let pkg_prefix = format!("  '{}@", LAZY_VIEW_NAME);
         let mut i = 0;
@@ -1128,6 +1131,7 @@ fn patch_session_persistence(home: &Path) -> Result<(), String> {
 
         // ── link→rename（rc.2 形态：tmp/finalPath；alpha 形态：带 v8 ignore 的 finally）──
         let has_link_fix = content.contains("Termux link→rename degrade")
+            || content.contains("Termux link-rename degrade")
             || content.contains("Termux/bionic (2026-09-12): 会话恢复写入");
         if !has_link_fix && !content.contains("error.code === \"EACCES\"") {
             // rc.2 形态
@@ -1137,7 +1141,9 @@ fn patch_session_persistence(home: &Path) -> Result<(), String> {
                 content = content.replace(link_old, link_new);
             }
         }
-        if !content.contains("Termux link→rename degrade") {
+        if !content.contains("Termux link→rename degrade")
+            || content.contains("Termux link-rename degrade")
+        {
             // alpha 形态：try{link}catch{} finally{rm}
             let link_old = r#"			await link(tmp, finalPath);
 			linked = true;
@@ -1274,34 +1280,110 @@ exports.open = open;
 }
 
 fn patch_attachment_local(home: &Path) -> Result<(), String> {
-    let path = profiles_node_modules(home).join("dsh-attachment-local/lib/index.js");
-    let content = fs::read_to_string(&path).map_err(|e| format!("attachment-local 缺失：{e}"))?;
-    if content.contains("sharp is unavailable on this platform") {
-        return Ok(());
-    }
-    // sharp has no android-arm64 prebuild (Termux/bionic): the static import
-    // fails at module load and takes the whole plugin down. Replace it with a
-    // top-level-await stub (file is ESM, Node supports TLA) so the plugin
-    // loads and only actual image calls throw a clear error. This covers ALL
-    // call sites at once (probe/detect/normalize pipelines), present and
-    // future, regardless of upstream indentation refactors.
-    // 0.1.6-alpha.2 起上游改用 createLazyRequire("sharp") 懒加载，import 期
-    // 已安全，无需补丁，直接通过。
-    if content.contains("createLazyRequire(\"sharp\"") {
-        return Ok(());
-    }
-    let imp_old = "import sharp from \"sharp\";\n";
-    if !content.contains(imp_old) {
-        if content.contains("sharp(") {
-            return Err(
-                "attachment-local sharp 调用仍在但 import 形态已变（dsh 内部变更？）".to_string(),
-            );
+    // 0.1.5-rc.2：profiles bundle 副本；0.1.7-alpha：dsh 包私有 node_modules。
+    let candidates = vec![
+        profiles_node_modules(home).join("dsh-attachment-local/lib/index.js"),
+        dsh_package_path("dsh-attachment-local").join("lib/index.js"),
+    ];
+    let mut applied = 0usize;
+    let mut last_error = String::new();
+    for path in &candidates {
+        if !path.exists() {
+            continue;
         }
-        return Ok(());
+        let content = match fs::read_to_string(path) {
+            Ok(value) => value,
+            Err(error) => {
+                last_error = format!("attachment-local 读取失败：{error}");
+                continue;
+            }
+        };
+
+        // 旧版形态：静态 import sharp 直接炸掉整个插件 → 换 TLA stub。
+        if content.contains("sharp is unavailable on this platform") {
+            applied += 1;
+            continue;
+        }
+        if content.contains("createLazyRequire(\"sharp\"") {
+            applied += 1;
+            continue;
+        }
+        let imp_old = "import sharp from \"sharp\";\n";
+        if content.contains(imp_old) {
+            let stub = "let sharp;\ntry {\n\tsharp = (await import(\"sharp\")).default;\n} catch {\n\tsharp = (...args) => {\n\t\tthrow new AttachmentError(\"sharp is unavailable on this platform.\", \"UNSUPPORTED_PLATFORM\");\n\t};\n}\n";
+            let fixed = content.replace(imp_old, stub);
+            if let Err(error) = atomic_write(path, fixed.as_bytes()) {
+                last_error = format!("attachment-local sharp stub 写入失败：{error}");
+                continue;
+            }
+            applied += 1;
+            continue;
+        }
+
+        // alpha.2 形态：sharp 懒加载已安全，但两处 publish 用裸 link()，
+        // bionic 上 EACCES → 所有上传 ATTACHMENT_WRITE_FAILED。注入 rename 降级。
+        if content.contains("Termux link→rename degrade")
+            || content.contains("Termux link-rename degrade")
+        {
+            applied += 1;
+            continue;
+        }
+        let alias_old = "\t\t\tawait link(source, target);\n\t\t} catch (error) {\n\t\t\t/* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */\n\t\t\tif (!(error instanceof Error && \"code\" in error && error.code === \"EEXIST\")) throw error;\n\t\t\tif (await digestFile(target) !== sha256) throw new AttachmentError(\"Stored attachment failed integrity verification.\", \"ATTACHMENT_CORRUPT\");";
+        let alias_new = "\t\t\tawait link(source, target);\n\t\t} catch (error) {\n\t\t\t// Termux link→rename degrade (2026-09-23): bionic denies hardlink here;\n\t\t\t// rename is equivalent for the same-filesystem immutable alias.\n\t\t\tif (error instanceof Error && \"code\" in error && (error.code === \"EACCES\" || error.code === \"EPERM\")) {\n\t\t\t\tawait rename(source, target);\n\t\t\t} else if (!(error instanceof Error && \"code\" in error && error.code === \"EEXIST\")) throw error;\n\t\t\tif (await digestFile(target) !== sha256) throw new AttachmentError(\"Stored attachment failed integrity verification.\", \"ATTACHMENT_CORRUPT\");";
+        let staged_old = "\t\t\tawait link(staged.path, target);\n\t\t} catch (error) {\n\t\t\t/* v8 ignore next -- Private same-filesystem directories make EEXIST the only recoverable link race. */\n\t\t\tif (!(error instanceof Error && \"code\" in error && error.code === \"EEXIST\")) throw error;\n\t\t\tif (await digestFile(target) !== staged.sha256) throw new AttachmentError(\"Stored attachment failed integrity verification.\", \"ATTACHMENT_CORRUPT\");";
+        let staged_new = "\t\t\tawait link(staged.path, target);\n\t\t} catch (error) {\n\t\t\t// Termux link→rename degrade (2026-09-23): bionic denies hardlink here;\n\t\t\t// rename is equivalent (staged file is removed below on success).\n\t\t\tif (error instanceof Error && \"code\" in error && (error.code === \"EACCES\" || error.code === \"EPERM\")) {\n\t\t\t\tawait rename(staged.path, target);\n\t\t\t} else if (!(error instanceof Error && \"code\" in error && error.code === \"EEXIST\")) throw error;\n\t\t\tif (await digestFile(target) !== staged.sha256) throw new AttachmentError(\"Stored attachment failed integrity verification.\", \"ATTACHMENT_CORRUPT\");";
+        let mut fixed = content
+            .replace(alias_old, alias_new)
+            .replace(staged_old, staged_new);
+        if fixed == content {
+            last_error = "attachment-local link 锚点未找到（dsh 内部变更？）".to_string();
+            continue;
+        }
+        // 确保 rename 在 fs/promises import 里
+        let import_re = "from \"node:fs/promises\";";
+        if let Some(idx) = fixed.find("import {") {
+            if let Some(end) = fixed[idx..].find(import_re) {
+                let names_span = &fixed[idx + 7..idx + end - 1];
+                if !names_span.contains("rename") {
+                    let new_names = format!("{}, rename", names_span.trim());
+                    fixed = format!(
+                        "{}import {{ {} {}{}",
+                        &fixed[..idx],
+                        new_names,
+                        import_re,
+                        &fixed[idx + end + import_re.len()..]
+                    );
+                }
+            }
+        }
+        let backup = path.with_extension("js.bak-before-link-degrade");
+        if !backup.exists() {
+            let _ = fs::copy(path, &backup);
+        }
+        if let Err(error) = atomic_write(path, fixed.as_bytes()) {
+            last_error = format!("attachment-local 写入失败：{error}");
+            continue;
+        }
+        applied += 1;
     }
-    let stub = "let sharp;\ntry {\n\tsharp = (await import(\"sharp\")).default;\n} catch {\n\tsharp = (...args) => {\n\t\tthrow new AttachmentError(\"sharp is unavailable on this platform.\", \"UNSUPPORTED_PLATFORM\");\n\t};\n}\n";
-    let fixed = content.replace(imp_old, stub);
-    return atomic_write(&path, fixed.as_bytes()).map_err(|e| e.to_string());
+    if applied == 0 {
+        return Err(if last_error.is_empty() {
+            "attachment-local 未找到任何候选文件".to_string()
+        } else {
+            last_error
+        });
+    }
+    // 图像管线：sharp 无 android 原生绑定 → wasm32 构建可跑（node --wasm）。
+    // 缺失时 dsh 的 package.json optionalDependencies 由用户 npm install 补齐，
+    // 这里只探测并给出可执行的指引。
+    let sharp_wasm = prefix()
+        .join("lib/node_modules/@deepseek-ai/dsh/node_modules/@img/sharp-wasm32/package.json");
+    if !sharp_wasm.exists() {
+        // 非致命：文本上传仍可用（link→rename 已修）；图像上传需要 wasm32。
+        // 不在此处 abort 整个补丁链（npm --no-save 会反复重置它）。
+        eprintln!("spec: sharp-wasm32 missing - image uploads degraded; install with: cd $PREFIX/lib/node_modules/@deepseek-ai/dsh && npm install --no-save @img/sharp-wasm32");
+    }
+    Ok(())
 }
 
 /// Termux fix: dsh-host-apiproxy's native path opener only has darwin/win32/linux
@@ -1349,18 +1431,30 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
 
     fn check(out: &mut Vec<(String, String, String)>, name: &str, path: &Path, marker: &str) {
+        check_any(out, name, path, &[marker]);
+    }
+    /// Marker 任一命中即 `ok`：上游化与文本微调（如 `→` 写成 `-`）不该误报漂移。
+    fn check_any(
+        out: &mut Vec<(String, String, String)>,
+        name: &str,
+        path: &Path,
+        markers: &[&str],
+    ) {
         if !path.exists() {
             out.push((name.to_string(), "n/a".to_string(), "未安装".to_string()));
             return;
         }
         match fs::read_to_string(path) {
-            Ok(content) if content.contains(marker) => {
+            Ok(content) if markers.iter().any(|m| content.contains(m)) => {
                 out.push((name.to_string(), "ok".to_string(), String::new()))
             }
             Ok(_) => out.push((
                 name.to_string(),
                 "DRIFT".to_string(),
-                format!("缺标记 {marker}（npm 重装会丢，跑 spec agent install dsh 恢复）"),
+                format!(
+                    "缺标记 {}（npm 重装会丢，跑 spec agent install dsh 恢复）",
+                    markers.join(" / ")
+                ),
             )),
             Err(error) => out.push((name.to_string(), "err".to_string(), error.to_string())),
         }
@@ -1433,6 +1527,26 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         &dsh_package_path("node-addon-require-builtin").join("lib/index.js"),
         "js-stub",
     );
+    check_any(
+        &mut out,
+        "attachment link→rename 降级",
+        &dsh_package_path("dsh-attachment-local").join("lib/index.js"),
+        // 0.2.0 起上游内嵌该降级且文本用连字符（link-rename），两种形态都算已打。
+        &["Termux link→rename degrade", "Termux link-rename degrade"],
+    );
+    {
+        let sharp_wasm = prefix()
+            .join("lib/node_modules/@deepseek-ai/dsh/node_modules/@img/sharp-wasm32/package.json");
+        out.push((
+            "sharp wasm32（图像上传）".to_string(),
+            if sharp_wasm.exists() { "ok".to_string() } else { "err".to_string() },
+            if sharp_wasm.exists() {
+                String::new()
+            } else {
+                "缺失：cd $PREFIX/lib/node_modules/@deepseek-ai/dsh && npm install --no-save @img/sharp-wasm32".to_string()
+            },
+        ));
+    }
     // app-boot 内部模块回退：0.1.5 无此机制 (n/a)；alpha 有锚点无标记 (DRIFT)；有标记 (ok)
     {
         let path = dsh_package_path("dsh-app-boot").join("lib/index.js");
@@ -1539,6 +1653,20 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
         "scheduleRestart",
     );
 
+    // 守护链活体（2026-10-02）：10/1 晚 Termux 进程被整杀，supervisor/watchdog
+    // 文件标记齐全却双双没跑、无人拉回——doctor 必须盯进程，不只盯文件。
+    out.push(daemon_liveness(
+        "dsh supervisor 活体",
+        &home.join(".config/opencode/kpad-dsh-web.pid"),
+        "kpad-dsh-web.cjs",
+    ));
+    out.push(daemon_liveness(
+        "dsh watchdog 活体",
+        &home.join(".config/opencode/kpad-watchdog.pid"),
+        "kpad-watchdog.sh",
+    ));
+    out.push(boot_chain_status(home));
+
     // node-pty: 真编产物 或 stub 二者有其一即视为可用
     let pty_dir = dsh_package_path("node-pty");
     if pty_dir.join("build/Release/pty.node").exists() {
@@ -1565,6 +1693,72 @@ pub fn dsh_patch_status(home: &Path) -> Vec<(String, String, String)> {
     );
 
     out
+}
+
+/// Runtime liveness for one daemon tracked by a pidfile: `ok` when the recorded
+/// pid is alive and its cmdline still matches `needle`; `DOWN` when the pidfile
+/// is missing or stale (killed without running its EXIT trap — e.g. the
+/// 2026-10-01 app-level kill that took supervisor + watchdog together).
+/// Never `DRIFT`: the file can be pristine while the process is gone.
+fn daemon_liveness(name: &str, pidfile: &Path, needle: &str) -> (String, String, String) {
+    let raw = match fs::read_to_string(pidfile) {
+        Ok(raw) => raw,
+        Err(_) => {
+            return (
+                name.to_string(),
+                "DOWN".to_string(),
+                "pidfile 缺失（守护未启动；由开机 boot 脚本或手动拉起）".to_string(),
+            );
+        }
+    };
+    let pid: i32 = raw.trim().parse().unwrap_or(0);
+    if pid <= 0 {
+        return (
+            name.to_string(),
+            "DOWN".to_string(),
+            "pidfile 无效".to_string(),
+        );
+    }
+    let cmdline = fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    if cmdline.contains(needle) {
+        (name.to_string(), "ok".to_string(), String::new())
+    } else {
+        (
+            name.to_string(),
+            "DOWN".to_string(),
+            format!("pid {pid} 已死或被回收（pidfile 过期）"),
+        )
+    }
+}
+
+/// The Termux:Boot chain that resurrects supervisor + watchdog after a device
+/// boot. `n/a` on hosts without Termux:Boot (CI, other platforms).
+fn boot_chain_status(home: &Path) -> (String, String, String) {
+    let path = home.join(".termux/boot/kpad.sh");
+    if !path.exists() {
+        return (
+            "boot 启动链".to_string(),
+            "n/a".to_string(),
+            "无 ~/.termux/boot/kpad.sh（Termux:Boot 未配置）".to_string(),
+        );
+    }
+    match fs::read_to_string(&path) {
+        Ok(content)
+            if content.contains("KPAD_DSH_SUPERVISOR") && content.contains("KPAD_WATCHDOG") =>
+        {
+            ("boot 启动链".to_string(), "ok".to_string(), String::new())
+        }
+        Ok(_) => (
+            "boot 启动链".to_string(),
+            "DRIFT".to_string(),
+            "缺 supervisor/watchdog 拉起行（整链死不会自愈）".to_string(),
+        ),
+        Err(error) => (
+            "boot 启动链".to_string(),
+            "err".to_string(),
+            error.to_string(),
+        ),
+    }
 }
 
 /// dsh 0.1.7-alpha：settings.yaml 是已淘汰的 legacy 文档，dsh-settings 每次启动
@@ -1736,10 +1930,11 @@ fn patch_fs_search() -> Result<(), String> {
             v.push(home.join(format!(
                 ".dsh/profiles/{profile}/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
             )));
-            v.push(home.join(format!(
-                ".dsh/profiles/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"
-            )));
         }
+        // profile 树共享副本（循环外推一次即可，重复 push 只是同路径多份）
+        v.push(
+            home.join(".dsh/profiles/node_modules/@deepseek-ai/dsh-tool-fs-search/lib/index.js"),
+        );
         v
     };
     let mut patched = 0usize;
@@ -1795,23 +1990,52 @@ fn patch_playwright_ld_preload(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Termux: install a `dsh-url` helper (print latest token URL) plus a minimal
-/// `dsh()` guard that refuses to start a second `dsh web` while :3080 is
-/// occupied (bare re-runs used to collide with EADDRINUSE). Everything else
-/// passes through to the native command — no supervisor, no restart scripts
-/// (retired 2026-09-12, see ~/.dsh/attic-20260911). Any legacy managed block
-/// (old marker) is replaced by helper+guard; unknown marker-owned content is
-/// left alone.
+/// Termux: own the `.bashrc` managed block for `dsh web` (2026-10-02 refresh).
+/// Bare `dsh web` never opens a browser: while the service is up it prints the
+/// best clickable link (supervisor-captured token verified live via 303, else
+/// the bare URL — since the 9/29 log redaction the old log-grep `dsh-url` can
+/// only read `[REDACTED]`); while it is down it starts through the canonical
+/// supervised path (`~/restart-dsh-web.sh`, setsid + readiness gate), falling
+/// back to a foreground `--no-open` on hosts without that script. Extra args
+/// (`--help`, `--port`, ...) pass through untouched.
+/// Install/upgrade: a block carrying the current generation marker is left
+/// alone; either older generation (markers below, identified by the
+/// `command dsh "$@"` tail) is replaced whole; marker-owned content with an
+/// unrecognized shape is left alone.
 fn patch_dsh_web_wrapper(home: &Path) -> Result<(), String> {
     let bashrc = home.join(".bashrc");
     let marker = "# dsh-url: 取 dsh web 最新 token 链接";
-    let helper = format!(
-        r###"{marker}（dsh 保持原生命令，不包装）
-dsh-url() {{
-  grep '^dsh web: http://127.0.0.1:3080/' ~/dsh-web-restart.log 2>/dev/null | tail -1 | sed 's/^dsh web: //;s/[[:space:]]*$//'
-}}
+    let current_marker = "dsh-web-url() {";
+    let legacy_marker = "# dsh web: 自动脱离终端后台启动";
+    let helper = r###"# dsh-web-url: 取当前 dsh web 的最佳可点链接（2026-10-02）
+# 优先读 supervisor 捕获的真 token（kpad-dsh.token），用 303 实测它是否属于当前进程；
+# token 失效/缺失则退回裸地址（浏览器有签名 cookie 时直接可用），服务没起则返回非 0。
+dsh-web-url() {
+  local token code
+  token=$(cat "$HOME/.config/opencode/kpad-dsh.token" 2>/dev/null)
+  if [ -n "$token" ]; then
+    code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "http://127.0.0.1:3080/?token=$token" 2>/dev/null)
+    if [ "$code" = "303" ]; then
+      printf '%s\n' "http://127.0.0.1:3080/?token=$token"
+      return 0
+    fi
+  fi
+  code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' http://127.0.0.1:3080/ 2>/dev/null)
+  case "$code" in
+    303|401) printf '%s\n' "http://127.0.0.1:3080/"; return 0 ;;
+  esac
+  return 1
+}
+# dsh-url: 取 dsh web 最新 token 链接（dsh 保持原生命令，不包装）
+# 2026-10-02 修复：9/29 起 supervisor 把日志里的 token 脱敏成 [REDACTED]，
+# 旧版 grep 日志只会拿到废链接；改为先走 dsh-web-url（真 token 实测），
+# 日志 grep 仅作后备并过滤已脱敏行。
+dsh-url() {
+  dsh-web-url && return 0
+  grep '^dsh web: http://127.0.0.1:3080/' ~/dsh-web-restart.log 2>/dev/null | grep -v 'REDACTED' | tail -1 | sed 's/^dsh web: //;s/[[:space:]]*$//'
+}
 # dsh-open：一键用浏览器打开最新链接（手机上复制长 token 太痛苦）
-dsh-open() {{
+dsh-open() {
   local url
   url=$(dsh-url)
   if [ -z "$url" ]; then
@@ -1827,48 +2051,83 @@ dsh-open() {{
   else
     echo "$url"
   fi
-}}
-# dsh 防重守卫：`dsh web` 在 3080 已被占用时只提示，不再起新进程。
-# 执意再起一个：command dsh web --port <其它端口>
-dsh() {{
-  if [ "$1" = "web" ] && curl -s -o /dev/null -m 2 http://127.0.0.1:3080/ 2>/dev/null; then
-    local pid
-    # PID 只做展示：锚定真实二进制路径，避免匹配到调用者自己的命令行。
+}
+# dsh 防重守卫 + 链接直出（2026-10-02 更新；守卫首版 2026-09-12）：
+# - 裸 `dsh web`：服务已在运行 → 只打印完整链接（不开新进程、不开浏览器）；
+#   未运行 → 走规范后台启动（restart-dsh-web.sh：setsid 守护 + 就绪门 + 2048 堆上限），
+#   同样不开浏览器，就绪后打印完整链接。
+# - `dsh web <其它参数>`（--help / --port / ...）全部原样透传原生命令（前台行为不变）。
+# - 想前台跑并看日志：command dsh web --no-open
+dsh() {
+  # 堆上限 2048M（≈node 默认）：09-26 定 512→OOM 自杀；09-27 实测 1024 于活跃使用 2h14m 撞顶 → 2048；再撞=查泄漏
+  if [ "$1" = "web" ]; then
+    export NODE_OPTIONS="--max-old-space-size=2048"
+    # 带参数一律透传（含 --help；防重守卫只拦裸 `dsh web`）
+    if [ "$#" -gt 1 ]; then
+      command dsh "$@"
+      return $?
+    fi
+    local pid url
+    # 09-29 加固：探测改为进程证据优先 + 端口兜底。原版只 curl 探端口，
+    # 慢响应/守护自愈空窗会误报"没服务"放行原生 boot → 15s 后 EADDRINUSE
+    # 自杀。pgrep 锚定真实二进制路径（避免匹配调用者自身命令行）。
     pid=$(pgrep -f '/usr/bin/dsh (--profile[ =]web|web)( |$)' | head -1)
-    echo "[dsh] web 已在运行${{pid:+ (PID $pid)}}，不再起新进程；取链接: dsh-url"
-    return 0
+    if [ -n "$pid" ] || curl -s -o /dev/null -m 3 http://127.0.0.1:3080/ 2>/dev/null; then
+      url=$(dsh-web-url 2>/dev/null)
+      echo "[dsh] web 已在运行${pid:+ (PID $pid)}，不开新进程、不开浏览器"
+      echo "[dsh] 链接: ${url:-http://127.0.0.1:3080/}"
+      return 0
+    fi
+    if [ -x "$HOME/restart-dsh-web.sh" ]; then
+      echo "[dsh] web 未在运行 → 后台规范启动（约 1 分钟就绪，期间不会打开浏览器）…"
+      bash "$HOME/restart-dsh-web.sh"
+      url=$(dsh-web-url 2>/dev/null)
+      if [ -n "$url" ]; then
+        echo "[dsh] 链接: $url"
+        return 0
+      fi
+      echo "[dsh] 启动未成功，查看 ~/dsh-web-restart.log 尾部"
+      return 1
+    fi
+    echo "[dsh] 无 restart-dsh-web.sh，前台启动（--no-open 不开浏览器；链接见下方 dsh web: 行）"
+    command dsh web --no-open
+    return $?
   fi
   command dsh "$@"
-}}
-"###
-    );
+}
+"###;
     let mut content = if bashrc.exists() {
         fs::read_to_string(&bashrc).map_err(|e| format!(".bashrc 读取失败：{e}"))?
     } else {
         String::new()
     };
-    if content.contains("dsh-url() {") {
+    // 当前代标记在 → 已是最新，任何手改/历史安装原样保留。
+    if content.contains(current_marker) {
         return Ok(());
     }
-    // Replace the legacy managed block (old marker "# dsh web: 自动脱离终端后台启动").
-    let old_marker = "# dsh web: 自动脱离终端后台启动";
-    if let Some(start) = content.find(old_marker) {
-        let old_end = "\n  command dsh \"$@\"\n}\n";
-        if let Some(relative_end) = content[start..].find(old_end) {
-            let end = start + relative_end + old_end.len();
-            let managed = &content[start..end];
-            if managed.contains("dsh() {") && managed.contains("command dsh") {
-                content.replace_range(start..end, &helper);
-                return atomic_write(&bashrc, content.as_bytes())
-                    .map_err(|e| format!(".bashrc 写入失败：{e}"));
-            }
+    // 两代旧托管块：按标记定位开头、按 `command dsh "$@"` 尾锚定结尾，整块换成
+    // 新 helper；找到标记但结构不认识 → 不动（宁可留旧，不赌替换范围）。
+    let end_anchor = "\n  command dsh \"$@\"\n}\n";
+    for start_marker in [legacy_marker, marker] {
+        let Some(start) = content.find(start_marker) else {
+            continue;
+        };
+        let Some(relative_end) = content[start..].find(end_anchor) else {
+            return Ok(());
+        };
+        let end = start + relative_end + end_anchor.len();
+        let managed = &content[start..end];
+        if managed.contains("dsh() {") && managed.contains("command dsh") {
+            content.replace_range(start..end, helper);
+            return atomic_write(&bashrc, content.as_bytes())
+                .map_err(|e| format!(".bashrc 写入失败：{e}"));
         }
         return Ok(());
     }
     if !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(&helper);
+    content.push_str(helper);
     atomic_write(&bashrc, content.as_bytes()).map_err(|e| format!(".bashrc 写入失败：{e}"))
 }
 
@@ -2595,8 +2854,7 @@ impl InstallLock {
                     .create_new(true)
                     .open(path)
                     .map_err(|e| format!("lock contention on {}: {e}", path.display()))
-            })
-            .map_err(|e| e)?;
+            })?;
         use std::io::Write;
         let _ = file.write_all(std::process::id().to_string().as_bytes());
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).ok();
@@ -2723,26 +2981,42 @@ mod tests {
             content.contains("# dsh-url: 取 dsh web 最新 token 链接"),
             "标记应写入"
         );
+        assert!(
+            content.contains("dsh-web-url() {"),
+            "应安装链接直出 helper（token 303 实测，失败退裸地址）"
+        );
         assert!(content.contains("dsh-url() {"), "只应安装 dsh-url helper");
         assert!(
             content.contains("dsh-open() {") && content.contains("termux-open-url"),
             "应安装 dsh-open 一键跳转"
         );
         assert!(
-            content.contains("grep '^dsh web: http://127.0.0.1:3080/'"),
-            "helper 应从重启日志取最新 token 链接"
+            content.contains("grep -v 'REDACTED'"),
+            "日志后备必须过滤 9/29 起的脱敏行"
         );
         assert!(
-            content.contains("不再起新进程") && content.contains("command dsh \"$@\""),
-            "应安装防重守卫（占端口只提示，其它透传）"
+            content.contains("不开新进程、不开浏览器") && content.contains("command dsh \"$@\""),
+            "应安装链接直出守卫（运行中只打印链接，不开浏览器，其它透传）"
         );
         assert!(
             content.contains("/usr/bin/dsh (--profile"),
             "守卫 PID 查找应锚定真实二进制路径（防自匹配）"
         );
         assert!(
+            content.contains("restart-dsh-web.sh"),
+            "未运行时应委托规范后台启动脚本"
+        );
+        assert!(
+            content.contains("--no-open"),
+            "无 restart 脚本的回退必须 --no-open（不打开浏览器）"
+        );
+        assert!(
+            content.contains("--max-old-space-size=2048"),
+            "守卫应自带堆上限 2048（对齐运行策略，防 512 复活）"
+        );
+        assert!(
             !content.contains("setsid nohup"),
-            "守卫不应包含后台拉起逻辑"
+            "守卫不应内联 detach 逻辑（委托 restart 脚本）"
         );
     }
 
@@ -2758,6 +3032,11 @@ mod tests {
         let twice = fs::read_to_string(home.join(".bashrc")).unwrap();
 
         assert_eq!(once, twice, "重复打补丁不应改变文件");
+        assert_eq!(
+            twice.matches("dsh-web-url() {").count(),
+            1,
+            "链接直出 helper 有且仅有一份"
+        );
         assert_eq!(
             twice.matches("dsh-url() {").count(),
             1,
@@ -2783,8 +3062,15 @@ mod tests {
         patch_dsh_web_wrapper(home).unwrap();
 
         let content = fs::read_to_string(home.join(".bashrc")).unwrap();
-        assert!(content.contains("dsh-url() {"), "旧托管块应被 helper 替换");
-        assert!(content.contains("不再起新进程"), "替换后应带防重守卫");
+        assert!(
+            content.contains("dsh-web-url() {"),
+            "旧托管块应被新 helper 替换"
+        );
+        assert!(content.contains("dsh-url() {"), "helper 应安装");
+        assert!(
+            content.contains("不开新进程、不开浏览器"),
+            "替换后应为链接直出守卫"
+        );
         assert!(!content.contains("setsid nohup"), "旧后台拉起逻辑应被清除");
         assert!(
             content.contains("user-content"),
@@ -2794,16 +3080,113 @@ mod tests {
     }
 
     #[test]
+    fn dsh_web_wrapper_upgrades_previous_generation_block() {
+        // 上一代（curl 单探测 + 读日志取链接）整块升级为链接直出版，块外内容保留、重复跑幂等。
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let previous = r#"# dsh-url: 取 dsh web 最新 token 链接（dsh 保持原生命令，不包装）
+dsh-url() {
+  grep '^dsh web: http://127.0.0.1:3080/' ~/dsh-web-restart.log 2>/dev/null | tail -1 | sed 's/^dsh web: //;s/[[:space:]]*$//'
+}
+# dsh 防重守卫：`dsh web` 在 3080 已被占用时只提示，不再起新进程。
+dsh() {
+  if [ "$1" = "web" ] && curl -s -o /dev/null -m 2 http://127.0.0.1:3080/ 2>/dev/null; then
+    echo "[dsh] web 已在运行，不再起新进程；取链接: dsh-url"
+    return 0
+  fi
+  command dsh "$@"
+}
+user-notes
+"#;
+        fs::write(home.join(".bashrc"), previous).unwrap();
+
+        patch_dsh_web_wrapper(home).unwrap();
+        let once = fs::read_to_string(home.join(".bashrc")).unwrap();
+        assert!(once.contains("dsh-web-url() {"), "应升级为链接直出版");
+        assert!(
+            !once.contains("取链接: dsh-url"),
+            "旧的日志取链提示应随块替换消失"
+        );
+        assert!(once.contains("user-notes"), "块外用户内容应保留");
+        assert_eq!(
+            once.matches("# dsh-url: 取 dsh web 最新 token 链接")
+                .count(),
+            1,
+            "标记应唯一"
+        );
+
+        patch_dsh_web_wrapper(home).unwrap();
+        assert_eq!(
+            once,
+            fs::read_to_string(home.join(".bashrc")).unwrap(),
+            "升级后重复打补丁幂等"
+        );
+    }
+
+    #[test]
+    fn dsh_web_wrapper_leaves_unrecognized_marker_content_alone() {
+        // 有标记但没有 `command dsh "$@"` 尾锚 → 结构不认识，宁可不动。
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let original =
+            "# dsh-url: 取 dsh web 最新 token 链接\n# hand-tuned by user, no guard tail\n";
+        fs::write(home.join(".bashrc"), original).unwrap();
+
+        patch_dsh_web_wrapper(home).unwrap();
+
+        assert_eq!(
+            original,
+            fs::read_to_string(home.join(".bashrc")).unwrap(),
+            "结构不认识的标记块应原样保留"
+        );
+    }
+
+    #[test]
     fn dsh_patch_status_reports_known_states() {
         let dir = tempfile::tempdir().unwrap();
         let report = dsh_patch_status(dir.path());
         assert!(!report.is_empty(), "应返回补丁清单");
         for (name, state, _detail) in &report {
             assert!(
-                ["ok", "DRIFT", "n/a", "err"].contains(&state.as_str()),
+                ["ok", "DRIFT", "n/a", "err", "DOWN"].contains(&state.as_str()),
                 "{name} 状态异常: {state}"
             );
         }
+        // 守护链活体条目必须存在：临时目录没有 pidfile/boot 脚本 → DOWN / n/a。
+        let lookup = |want: &str| {
+            report
+                .iter()
+                .find(|(name, _, _)| name == want)
+                .map(|(_, state, _)| state.clone())
+        };
+        assert_eq!(
+            lookup("dsh supervisor 活体").as_deref(),
+            Some("DOWN"),
+            "无 pidfile 应报 DOWN"
+        );
+        assert_eq!(
+            lookup("dsh watchdog 活体").as_deref(),
+            Some("DOWN"),
+            "无 pidfile 应报 DOWN"
+        );
+        assert_eq!(
+            lookup("boot 启动链").as_deref(),
+            Some("n/a"),
+            "无 Termux:Boot 脚本应报 n/a"
+        );
+        // pidfile 指向死 pid → DOWN（活体检查，不是文件标记）。
+        fs::create_dir_all(dir.path().join(".config/opencode")).unwrap();
+        fs::write(
+            dir.path().join(".config/opencode/kpad-dsh-web.pid"),
+            "999999\n",
+        )
+        .unwrap();
+        let report = dsh_patch_status(dir.path());
+        let dead = report
+            .iter()
+            .find(|(name, _, _)| name == "dsh supervisor 活体")
+            .map(|(_, state, _)| state.clone());
+        assert_eq!(dead.as_deref(), Some("DOWN"), "死 pid 应报 DOWN");
         // 本仓目标机上至少应有若干补丁处于 ok（dsh 已安装且已打补丁）
         let installed =
             dsh_patch_status(&std::env::var("HOME").map(PathBuf::from).unwrap_or_default());
@@ -3134,8 +3517,8 @@ mod tests {
         patch_dsh_heap_cap(home).unwrap();
         let once = fs::read_to_string(home.join(".bashrc")).unwrap();
         assert!(
-            once.contains("--max-old-space-size=512"),
-            "应在守卫内注入堆上限"
+            once.contains("--max-old-space-size=2048"),
+            "应在守卫内注入堆上限（对齐运行策略，512 已废弃）"
         );
         assert!(once.contains("command dsh \"$@\""), "原有守卫透传应保留");
 
