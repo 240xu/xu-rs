@@ -2078,6 +2078,12 @@ dsh() {
       echo "[dsh] 链接: ${url:-http://127.0.0.1:3080/}"
       return 0
     fi
+    # web 会话自杀守卫（2026-10-02）：会话环境必带 DSH_WEB_URL；此时冷启会
+    # 杀掉承载本会话的服务器（10-02 四次孤儿重启同源），拒绝并指路终端。
+    if [ -n "${DSH_WEB_URL:-}" ]; then
+      echo "[dsh] 服务未在运行，而你在 dsh web 会话里——重启会杀死本会话。请在 Termux 终端执行: dsh web"
+      return 1
+    fi
     if [ -x "$HOME/restart-dsh-web.sh" ]; then
       echo "[dsh] web 未在运行 → 后台规范启动（约 1 分钟就绪，期间不会打开浏览器）…"
       bash "$HOME/restart-dsh-web.sh"
@@ -3005,6 +3011,10 @@ mod tests {
         assert!(
             content.contains("restart-dsh-web.sh"),
             "未运行时应委托规范后台启动脚本"
+        );
+        assert!(
+            content.contains("DSH_WEB_URL"),
+            "应带 web 会话自杀守卫（会话内冷启会杀死承载服务器）"
         );
         assert!(
             content.contains("--no-open"),
