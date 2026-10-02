@@ -24,8 +24,14 @@ const CHECKSUMS = {
     "8004fca54517d433935ba7124bfdcf0cd8b7cb0f155bbbde95025f256c1513a7",
 };
 
-// GitHub Release asset id for the BIN_VERSION tarball (from the releases API).
-const ASSET_ID = "571151064";
+// Fallback GitHub Release asset ids (used when the CDN direct link fails and
+// the releases API endpoint is hit; anonymous API calls are rate-limited).
+const LEGACY_ASSET_IDS = {
+  "0.1.0": "547284461",
+  "0.1.1": "571151064",
+  "0.1.2": "580914905",
+};
+const ASSET_ID = LEGACY_ASSET_IDS[BIN_VERSION];
 
 // Expected byte size of the tarball; guards against truncated / HTML error pages
 // being accepted as a valid download.

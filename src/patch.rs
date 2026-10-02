@@ -11,7 +11,8 @@ use crate::skills::{AppliedProjection, ProjectionPatch, ProjectionState};
 /// Lock file lives beside the target as `.<name>.spec.lock`.
 pub struct FileLock {
     path: PathBuf,
-    file: File,
+    // 持有 fd 即持有 flock；字段本身不被读取，仅靠 Drop 释放锁。
+    _file: File,
 }
 
 impl FileLock {
@@ -50,7 +51,7 @@ impl FileLock {
             let _ = writeln!(f, "pid={} time={}", std::process::id(), chrono_like_now());
             let _ = f.sync_all();
         }
-        Ok(Self { path, file })
+        Ok(Self { path, _file: file })
     }
 
     pub fn acquire_with_timeout(target: &Path, timeout: Duration) -> Result<Self, String> {
