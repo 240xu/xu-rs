@@ -22,7 +22,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: TARGET=linux-x86_64 sh scripts/package.sh
+      # scripts/package.sh 用 bash 语法（set -o pipefail）且 shebang 是 Termux 绝对路径，
+      # ubuntu 的 dash/`sh` 跑不了——CI 一直死在这里（2026-10-02 修）。
+      - run: TARGET=linux-x86_64 bash scripts/package.sh
       - uses: actions/upload-artifact@v4
         with:
           name: xu-release-package

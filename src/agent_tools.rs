@@ -3187,13 +3187,15 @@ user-notes
             .find(|(name, _, _)| name == "dsh supervisor 活体")
             .map(|(_, state, _)| state.clone());
         assert_eq!(dead.as_deref(), Some("DOWN"), "死 pid 应报 DOWN");
-        // 本仓目标机上至少应有若干补丁处于 ok（dsh 已安装且已打补丁）
-        let installed =
-            dsh_patch_status(&std::env::var("HOME").map(PathBuf::from).unwrap_or_default());
-        assert!(
-            installed.iter().any(|(_, state, _)| state == "ok"),
-            "真机应至少有一项补丁为 ok"
-        );
+        // 装了 dsh 的机器上至少应有若干补丁处于 ok；干净机器/CI（无 dsh，全 n/a）不适用。
+        if prefix().join("lib/node_modules/@deepseek-ai/dsh").exists() {
+            let installed =
+                dsh_patch_status(&std::env::var("HOME").map(PathBuf::from).unwrap_or_default());
+            assert!(
+                installed.iter().any(|(_, state, _)| state == "ok"),
+                "真机应至少有一项补丁为 ok"
+            );
+        }
     }
 
     #[test]
