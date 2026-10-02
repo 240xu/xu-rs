@@ -42,35 +42,38 @@
 | 11 | node-pty | `node_modules/node-pty/` | `build/Release/pty.node` 存在 = 真编；否则 `lib/index.js` 含 stub | 先 clang 直编，失败落 stub（安装器 `rebuild_node_pty` 自动二选一） |
 | 12 | node-gyp android 映射 | `$PREFIX/lib/node_modules/npm/…/gyp/pylib/gyp/input.py` | `variables["OS"] = "linux"` | 无 NDK 时按 linux 处理 gyp android 分支 |
 | 13 | profile 沙箱适配 | `~/.dsh/profiles/{web,headless}/cordis.patch.yml` | `dsh-sandbox-local`（disabled 行） | 只禁 sandbox-local；**勿禁 bash-sandbox**（sandboxMode 唯一提供者，禁了 permission 守卫 fatal）；**勿插 bare bash-local**（抢 shell 位且无 sandboxMode，同样 fatal） |
-| 14 | .bashrc 助手 | `~/.bashrc` | `dsh-open()` | `dsh-url`（取 token 链接）、`dsh-open`（一键跳浏览器）、`dsh()` 防重守卫 |
+| 14 | .bashrc 助手 | `~/.bashrc` | `dsh-web-url()` | `dsh-web-url`（token 303 实测取链接，失败退裸地址）、`dsh-url`（同上+日志后备，过滤 `[REDACTED]`）、`dsh-open`（一键跳浏览器）、`dsh()` 链接直出守卫：运行中只打印链接不开浏览器，未运行走 `restart-dsh-web.sh` 规范后台启动（无该脚本回退前台 `--no-open`） |
 | 15 | app-boot 内部模块回退 | prefix 下 `dsh-app-boot/lib/index.js`（经 hoist 解析） | `Termux/bionic internalModules fallback` | 0.1.6-alpha.2 起 host preparation 顶层直连 `node-addon-require-builtin` 原生绑定；该包无 android-arm64 且 fail closed。dsh 恒带 `--expose-internals`，回退走 plain createRequire，直达同一批内部模块（下游 shape 校验照常）。0.1.5 及更早无此机制，补丁与 doctor 均为 n/a |
 | 16 | task-board 轮询降频 | `~/.dsh/profiles/web/node_modules/@linxin666/dsh-client-ui-task-board/lib/index.js` | `SESSION_POLL_MS = 3e4` | 上游默认 5s 全量扫描所有 session（逐个解压首帧读 header），空闲期持续吃 CPU/IO 且随会话数线性恶化；降到 30s。第三方插件缺失时容忍（n/a） |
 | 17 | lazy-view 插件部署 | `~/.dsh/profiles/web/node_modules/@240xu/dsh-session-lazy-view/`（registry tarball 解包） | `lib/index.js` 含 `readTailFrames` | 自研惰性会话查看器（npm `@240xu/dsh-session-lazy-view`）：只解压尾部 zstd 帧看大会话，不触发全量 fromRestore。部署器同步注册三件套：profile package.json（deps+bundles）、pnpm-lock.yaml（importer+packages，外科手术式，本机 OpenViking git 依赖拉不动 pnpm 全量安装）、.package-map.json |
-| 18 | web 堆上限 512M | `~/.bashrc` dsh() 守卫内 | `--max-old-space-size=512` | 实测堆峰值 678M（大 session 解压）触发内核换出 300M+ 到 swap 造成毛刺；`dsh web` 启动时注入 NODE_OPTIONS，逼早 GC。无守卫时跳过（守卫由 #14 安装） |
+| 18 | web 堆上限（任意值） | `~/.bashrc` dsh() 守卫内 | `--max-old-space-size` | 实测堆峰值 678M（大 session 解压）触发内核换出 300M+ 到 swap 造成毛刺；`dsh web` 启动时注入 NODE_OPTIONS 逼早 GC。**数值随运行策略演进：512→1024→2048（2026-09-27 定 2048）**；512 注入在 09-26 造成过 OOM 自杀循环，新注入一律 2048，任何既有值均尊重不重复写。无守卫时跳过（守卫由 #14 安装，其新一代模板自带 2048，本条仅兜底旧形态） |
 
 全局树与 profile 树的关键文件多为**同一 inode 硬链接**（改一边等于改两边）；npm 重装会同时洗掉两侧。
 
 ## 漂移检测与恢复
 
 ```sh
-spec doctor            # 逐项列出 [ok]/[DRIFT]/[n/a]
+spec doctor            # 逐项列出 [ok]/[DRIFT]/[n/a]/[DOWN]
 spec agent install dsh # DRIFT 时一键补回（幂等，含回归测试）
 ```
 
 - `DRIFT` = 文件在但标记丢失（npm 重装的典型后果）。
 - `n/a` = 目标未安装（如 dsh 未装）。
+- `DOWN` = 文件齐全但**进程没跑**（pidfile 缺失/过期）——守护链活体检查，盯 supervisor/watchdog 进程本身；2026-10-01 曾发生 Termux 整杀后文件全在、服务全死且无人拉回。
 - 升级 DSH 的标准流程：`npm i -g @deepseek-ai/dsh` → `spec doctor` → 有 DRIFT 则 `spec agent install dsh` → 重启 dsh web → 再跑一次 `spec doctor` 应全 ok。
 
 ## dsh web 运维（去壳后的原生形态）
 
 ```sh
-# 启动（唯一方式；不要 runit/包装器）
-setsid nohup $PREFIX/bin/dsh --profile web --no-open --port 3080 \
-  >> ~/dsh-web-restart.log 2>&1 < /dev/null &
+# 启动（推荐：一键完成守护+就绪门+取链接）
+dsh web                       # 未运行→规范后台启动（不开浏览器）；运行中→只打印完整链接
 
-dsh-url    # 取最新 token 链接（每次启动轮换；旧标签页必失效）
+# 手动规范启动等价物（watchdog/CI 用）
+bash ~/restart-dsh-web.sh     # setsid 守护 + 等 401 就绪 + 轮换 token
+
+dsh-url    # 取当前可用链接（真 token 303 实测；每次启动轮换，旧标签页必失效）
 dsh-open   # 直接跳浏览器（termux-open-url → termux-open → am → echo 回退）
-dsh web    # 3080 已被占用时只提示不重启（防重守卫）
+# 想前台跑并看日志：command dsh web --no-open
 ```
 
 - 裸地址 `http://127.0.0.1:3080/` 返回 `401` 是认证门（token 强制，官方设计），有 HTTP 码 = 服务可达。
@@ -86,7 +89,7 @@ dsh web    # 3080 已被占用时只提示不重启（防重守卫）
 | resume 报 flock unsupported | 无 android 绑定 | 补丁 3（无锁降级） |
 | 一次会话撑到 35MB+ 打开即卡 | 模型退化输出（"Go. OK. Writing. Let me output." 无限循环）×3 份冗余（text/reasoning/replayState.stream） | `clean-sessions.js` 裁剪（备份在 `~/.dsh/sessions-backup-*`） |
 | `plugin tree failed: … permission-presets` | bash-sandbox 被禁 / bare bash-local 抢 shell 位 | 补丁 13 的收敛逻辑，恢复正确 profile 形态 |
-| `EADDRINUSE :3080` | 双实例互撞 | 守卫拦截 + `pgrep -f` 用括号锚定真实路径（防自匹配） |
+| `EADDRINUSE :3080` | 双实例互撞 | 守卫拦截（进程证据优先 + 端口兜底）+ `pgrep -f` 用括号锚定真实路径（防自匹配） |
 | task-board 报瞬时 `corrupt Zstandard` | 有会话正被边写边读（活体 turn 重试） | 杀掉续写源（重启 dsh），确认 mtime 停止增长 |
 
 ## 会话归档（数据运维，非补丁）

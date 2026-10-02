@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- dsh web `.bashrc` 托管块第三代：裸 `dsh web` 不再打开浏览器——运行中只打印完整链接（`dsh-web-url` 对 supervisor 捕获的 token 做 303 实测，失败退裸地址），未运行走 `restart-dsh-web.sh` 规范后台启动（无该脚本回退前台 `--no-open`）；`dsh web --help/--port` 等参数原样透传。旧两代托管块自动整块升级，结构不认识的原样保留。
+- 修复 `dsh-url`：9/29 起 supervisor 把日志 token 脱敏成 `[REDACTED]`，日志 grep 只能取到废链接；现读 supervisor 捕获的真 token 并实测，日志后备过滤脱敏行。
+- `spec doctor` 新增守护链活体检查：supervisor/watchdog pidfile 活体（新状态 `DOWN`）+ Termux:Boot 启动链（`n/a`/`DRIFT`）——2026-10-01 Termux 整杀后"文件全在、进程全死、无人拉回"的场景从此可见。attachment link→rename 标记接受 `→`/`-` 两种形态（0.2.0 上游化文本），消除永久误报 DRIFT。
+- 堆上限补丁对齐运行策略：任何既有 `--max-old-space-size` 均尊重不重写，新注入 2048（512 注入曾造成 OOM 自杀循环）。
+- attachment-local 补丁链多候选路径适配（profile 副本 / dsh 包私有 node_modules），sharp 懒加载与 link→rename 双形态幂等跳过；sharp-wasm32 缺失时给非致命安装指引。
+- Web 控制台交互打磨：全局忙态指示、命令防重复提交、toast 轻提示、面板/日志时间戳、日志清空与收起。
+
 ## 0.1.3
 
 - npm wrapper ships the refreshed android-aarch64 binary (release v0.1.1, built from the 0.1.5-rc.2 patch line) with sha256 + size pins; Android shebang rewrite retained.
