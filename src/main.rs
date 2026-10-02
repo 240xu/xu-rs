@@ -7,15 +7,15 @@ mod ui;
 use app::*;
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
-use trivium::agent_tools::{status_rows, AgentToolStatus};
-use trivium::domain::{AgentTarget, ProviderProfile};
-use trivium::state::{ProviderHealth, UiSurface};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
+use trivium::agent_tools::{status_rows, AgentToolStatus};
+use trivium::domain::{AgentTarget, ProviderProfile};
+use trivium::state::{ProviderHealth, UiSurface};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -491,7 +491,10 @@ fn main() {
         }
         return;
     }
-    if matches!(trivium::state::preferred_ui_surface(&home), Ok(UiSurface::Web)) {
+    if matches!(
+        trivium::state::preferred_ui_surface(&home),
+        Ok(UiSurface::Web)
+    ) {
         let port = trivium::web::default_port();
         match trivium::web::serve(port, Arc::new(AtomicBool::new(false))) {
             Ok(()) => return,
@@ -3127,7 +3130,8 @@ fn main() {
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(preset) = trivium::provider_presets::all().get(provider_preset_idx)
+                        if let Some(preset) =
+                            trivium::provider_presets::all().get(provider_preset_idx)
                         {
                             provider_add_form = provider_add_form_from_preset(preset);
                             mode = Mode::ProviderAddForm;
@@ -3263,7 +3267,8 @@ fn main() {
                         if pending_opencode_permission.is_some() =>
                     {
                         let permission = pending_opencode_permission.take().unwrap_or_default();
-                        match trivium::opencode_settings::set_permission(&home, &permission, false) {
+                        match trivium::opencode_settings::set_permission(&home, &permission, false)
+                        {
                             Ok(result) => {
                                 opencode_permission = permission;
                                 opencode_settings_message = format!(

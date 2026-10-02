@@ -299,8 +299,9 @@ pub fn handle_client_event(ev: AppEvent, s: &mut ClientState<'_>) -> ClientOutco
                     crate::ui::screens::agents::AgentMouseAction::OpenCodeSettings => {
                         *s.agent_pending_update = None;
                         *s.agent_pending_setup = false;
-                        *s.opencode_permission = trivium::opencode_settings::read_permission(s.home)
-                            .unwrap_or_else(|_| "ask".to_string());
+                        *s.opencode_permission =
+                            trivium::opencode_settings::read_permission(s.home)
+                                .unwrap_or_else(|_| "ask".to_string());
                         *s.pending_opencode_permission = None;
                         s.opencode_settings_message.clear();
                         return ClientOutcome::Cont {

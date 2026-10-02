@@ -35,7 +35,9 @@ pub fn agent_has_update(status: &AgentToolStatus) -> bool {
         status.current_version.as_deref(),
         status.latest_version.as_deref(),
     ) {
-        (Some(current), Some(latest)) => trivium::agent_tools::compare_versions(current, latest) < 0,
+        (Some(current), Some(latest)) => {
+            trivium::agent_tools::compare_versions(current, latest) < 0
+        }
         _ => false,
     }
 }

@@ -552,7 +552,8 @@ fn apply_patch_supports_dry_run_backup_and_restore() {
     let path = root.path().join("settings.json");
     fs::write(&path, "old").unwrap();
 
-    let patch = trivium::patch::ConfigPatch::new(path.clone(), "old".to_string(), "new".to_string());
+    let patch =
+        trivium::patch::ConfigPatch::new(path.clone(), "old".to_string(), "new".to_string());
     let dry = apply_patch(
         &patch,
         PatchOptions {

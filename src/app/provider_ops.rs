@@ -2042,7 +2042,8 @@ pub fn apply_provider_plan(
     };
 
     let home = config::home();
-    let mut plan = match trivium::agents::apply_agent(&home, target, &state.providers, provider_ids) {
+    let mut plan = match trivium::agents::apply_agent(&home, target, &state.providers, provider_ids)
+    {
         Ok(plan) => plan,
         Err(error) => return format!("应用失败：无法生成计划：{error}"),
     };
