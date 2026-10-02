@@ -312,3 +312,59 @@ pre.detail {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* ── v2 additions: busy / toast / log toggle / stamps ── */
+.panel-stamp { color: var(--ink-3); font: 400 10px/1 var(--mono); letter-spacing: .08em; margin-left: 8px; }
+
+.busy-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid var(--hair); border-top-color: var(--blue);
+  display: inline-block; animation: busy-spin .7s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+
+body.busy .row-actions .act,
+body.busy .toggle-chip,
+body.busy .entry-actions .act,
+body.busy .fab-switch { opacity: .4; pointer-events: none; }
+
+.toasts {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  z-index: 120; display: flex; flex-direction: column; gap: 8px; align-items: center;
+}
+.toast {
+  padding: 9px 16px; background: var(--ink); color: var(--paper);
+  font: 500 13px/1.4 var(--sans); max-width: min(480px, 88vw);
+  opacity: 0; transform: translateY(8px); transition: opacity .25s ease, transform .25s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast-warn { background: var(--red); color: #fff; }
+.toast-ok { background: var(--ink); }
+
+.log-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.log-actions { display: flex; gap: 14px; }
+.log-stamp { font: 400 10px/1 var(--mono); letter-spacing: .06em; }
+.log.collapsed .log-body { display: none; }
+.log-head { cursor: default; }
+
+/* agent 卡片内的更新按钮 */
+.card-update { margin-top: 6px; }
+
+/* ── dark mode（保持 #0000ee 单一强调色不变） ── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #111111;
+    --ink: #f2f2f2;
+    --ink-2: #a8a8a8;
+    --ink-3: #7a7a7a;
+    --hair: #2c2c2c;
+    --blue: #0000ee;
+  }
+  .ledger tbody tr:hover, .entry-head:hover { background: #1a1a1a; }
+  .toggle-chip.on { background: var(--ink); color: var(--paper); }
+  .toggle-chip.on .glyph, .toggle-chip.on .toggle-word { color: var(--paper); }
+  .edit-grid input, .edit-grid select { background: #1a1a1a; }
+  .toast { background: var(--ink); color: var(--paper); }
+  .fab-switch:hover { background: var(--ink); color: var(--paper); }
+}

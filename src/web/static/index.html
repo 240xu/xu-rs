@@ -12,6 +12,7 @@
     <div class="brand-block">
       <span class="brand">XCC Switch</span>
       <span class="eyebrow">XCC · TERMUX CC-SWITCH</span>
+      <span class="busy-dot" id="busy-dot" hidden aria-label="命令执行中"></span>
     </div>
     <nav class="tabs" id="tabs"></nav>
   </header>
@@ -24,11 +25,18 @@
 
   <main id="content" class="content"></main>
 
-  <section class="log">
-    <div class="log-head">命令输出</div>
+  <section class="log" id="log-section">
+    <div class="log-head">
+      <span>命令输出 <span id="log-stamp" class="log-stamp"></span></span>
+      <span class="log-actions">
+        <button class="act" id="log-clear">清空</button>
+        <button class="act" id="log-toggle">收起</button>
+      </span>
+    </div>
     <pre id="log" class="log-body"></pre>
   </section>
 
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <button id="stop-btn" class="fab-switch" title="停止 Web 控制台并回到终端 TUI">⇄ 切回 TUI</button>
 </div>
 <script src="/static/app.js"></script>

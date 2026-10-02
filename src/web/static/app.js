@@ -18,6 +18,32 @@ function updateStat(sel, html) { const el = $(sel); if (el) el.innerHTML = html;
 function log(text) {
   logEl.textContent += (logEl.textContent ? "\n" : "") + (text || "");
   logEl.scrollTop = logEl.scrollHeight;
+  const stamp = $("#log-stamp");
+  if (stamp) stamp.textContent = "· 最后输出 " + new Date().toLocaleTimeString();
+}
+
+/* ── 全局忙态：命令运行中顶栏出旋转点，页面动作按钮统一降透明防连点 ── */
+let busyCount = 0;
+function setBusy(delta) {
+  busyCount = Math.max(0, busyCount + delta);
+  const dot = $("#busy-dot");
+  if (dot) dot.hidden = busyCount === 0;
+  document.body.classList.toggle("busy", busyCount > 0);
+}
+
+/* ── toast：替代 alert 的轻提示，4s 自动消失 ── */
+function toast(text, kind) {
+  const wrap = $("#toasts");
+  if (!wrap) { alert(text); return; }
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " toast-" + kind : "");
+  el.textContent = text;
+  wrap.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 300);
+  }, 4000);
 }
 
 function csrfHeaders(opts) {
@@ -35,15 +61,26 @@ async function api(path, opts) {
   return body;
 }
 
-async function command(args) {
-  const res = await api("/api/command", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ args }),
-  });
-  log("$ spec " + args.join(" "));
-  log(res && res.ok ? res.output : (res && res.error) || "命令失败");
-  return res;
+const inflight = new Set(); // 同一命令防重复提交。
+
+async function command(args, key) {
+  const dedupeKey = key || args.join(" ");
+  if (inflight.has(dedupeKey)) return { ok: false, error: "命令执行中，请稍候" };
+  inflight.add(dedupeKey);
+  setBusy(1);
+  try {
+    const res = await api("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ args }),
+    });
+    log("$ spec " + args.join(" "));
+    log(res && res.ok ? res.output : (res && res.error) || "命令失败");
+    return res;
+  } finally {
+    inflight.delete(dedupeKey);
+    setBusy(-1);
+  }
 }
 
 function fmtTokens(n) {
@@ -58,16 +95,40 @@ function pct(x) {
   return (x * 100).toFixed(1) + "%";
 }
 
+/* ── 面板「更新于 x 前」时间戳 ── */
+const loadedAt = {};
+function stampPanel(id) { loadedAt[id] = Date.now(); paintStamp(); }
+function paintStamp() {
+  const t = loadedAt[current];
+  const el = $("#panel-stamp");
+  if (!el) return;
+  el.textContent = t ? "· 更新于 " + ago(t) : "";
+}
+function ago(t) {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return s + "s 前";
+  return Math.round(s / 60) + "m 前";
+}
+setInterval(paintStamp, 5000);
+
 function renderTabs() {
   const nav = $("#tabs");
   nav.innerHTML = "";
-  for (const [id, label] of TABS) {
+  TABS.forEach(([id, label], i) => {
     const b = document.createElement("button");
     b.className = "tab-btn" + (id === current ? " active" : "");
     b.textContent = label;
-    b.onclick = () => { current = id; renderTabs(); renderPanel(); };
+    b.title = "快捷键 " + (i + 1);
+    b.onclick = () => switchTab(id);
     nav.appendChild(b);
-  }
+  });
+}
+
+function switchTab(id) {
+  if (current === id) return renderPanel();
+  current = id;
+  renderTabs();
+  renderPanel();
 }
 
 let panel_owner = 0; // 当前持有面板的渲染序号；防旧 tab 渲染器抢占。
@@ -90,6 +151,7 @@ async function renderProviders() {
   const c = panel();
   const res = await api("/api/providers");
   if (seq !== render_seq || panel_owner !== seq) return;
+  stampPanel("providers");
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端：' + (res && res.error || "未知错误") + '</div>'; return; }
   const list = res.data || [];
   updateStat("#stat-providers", pad2(list.length));
@@ -97,7 +159,7 @@ async function renderProviders() {
   if (!list.length) { c.innerHTML = '<div class="empty">暂无供应商</div>'; return; }
 
   function listView() {
-    c.innerHTML = '<div class="section-head"><span class="section-title">PROVIDERS — ' + pad2(list.length) + ' ENTRIES</span></div>';
+    c.innerHTML = '<div class="section-head"><span class="section-title">PROVIDERS — ' + pad2(list.length) + ' ENTRIES <span id="panel-stamp" class="panel-stamp"></span></span></div>';
     const t = document.createElement("table");
     t.className = "ledger";
     const heads = ["名称", "协议", "状态", "模型", "ENDPOINT", "默认模型", "操作"];
@@ -132,13 +194,19 @@ async function renderProviders() {
     }
     t.appendChild(tb);
     c.appendChild(t);
+    paintStamp();
   }
 
   function detailView(output) {
     c.innerHTML =
-      '<div class="section-head"><button class="act" id="back-detail">← 返回列表</button></div>' +
+      '<div class="section-head"><span class="row-actions"><button class="act" id="back-detail">← 返回列表</button>' +
+      '<button class="act" id="copy-detail">复制</button></span></div>' +
       '<pre class="detail">' + escapeHtml(output) + "</pre>";
     $("#back-detail").onclick = listView;
+    $("#copy-detail").onclick = async () => {
+      try { await navigator.clipboard.writeText(output); toast("已复制到剪贴板"); }
+      catch (_) { toast("复制失败，请手动选择", "warn"); }
+    };
   }
 
   listView();
@@ -180,13 +248,22 @@ function applyPendingOpen() {
   }
 }
 
+const toggling = new Set(); // 防同一开关双击发出两个相反请求。
+
 async function toggleTarget(kind, id, target, next) {
-  const open = collectOpenNames();
-  const res = await command([kind, next ? "enable" : "disable", id, "--target", target, "--yes"]);
-  if (res && res.ok) {
-    pending_open = open;
-    await (current === "mcp" ? renderMcp() : current === "skills" ? renderSkills() : renderPanel());
-    if (current === "mcp" || current === "skills") applyPendingOpen();
+  const key = kind + ":" + id + ":" + target;
+  if (toggling.has(key)) return;
+  toggling.add(key);
+  try {
+    const open = collectOpenNames();
+    const res = await command([kind, next ? "enable" : "disable", id, "--target", target, "--yes"]);
+    if (res && res.ok) {
+      pending_open = open;
+      await (current === "mcp" ? renderMcp() : current === "skills" ? renderSkills() : renderPanel());
+      if (current === "mcp" || current === "skills") applyPendingOpen();
+    }
+  } finally {
+    toggling.delete(key);
   }
 }
 let pending_open = null;
@@ -211,11 +288,12 @@ async function renderMcp() {
   const c = panel();
   const res = await api("/api/mcp");
   if (seq !== render_seq || panel_owner !== seq) return;
+  stampPanel("mcp");
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const list = res.data || [];
   if (!list.length) { c.innerHTML = '<div class="empty">暂无 MCP 服务</div>'; return; }
   c.innerHTML = '<div class="section-head"><span class="section-title">MCP — ' + pad2(list.length) +
-    ' ENTRIES · 点行展开</span><button class="act" id="mcp-refresh">刷新 ↻</button></div>';
+    ' ENTRIES · 点行展开 <span id="panel-stamp" class="panel-stamp"></span></span><button class="act" id="mcp-refresh">刷新 ↻</button></div>';
   $("#mcp-refresh").onclick = renderMcp;
   for (const m of list) {
     const entry = document.createElement("section");
@@ -237,6 +315,7 @@ async function renderMcp() {
     };
     c.appendChild(entry);
   }
+  paintStamp();
 
   function buildMcpBody(body, m) {
     body.innerHTML = "";
@@ -257,8 +336,8 @@ async function renderMcp() {
     actions.querySelector("[data-edit]").onclick = () => buildMcpForm(body, m, actions);
     actions.querySelector("[data-del]").onclick = async () => {
       if (!confirm("删除 MCP " + (m.name || m.id) + "？")) return;
-      await command(["mcp","delete", m.id, "--yes"]);
-      current === "mcp" ? renderMcp() : renderPanel();
+      const res = await command(["mcp","delete", m.id, "--yes"]);
+      if (res && res.ok) { current === "mcp" ? renderMcp() : renderPanel(); }
     };
   }
 
@@ -272,9 +351,9 @@ async function renderMcp() {
       "<label>传输<select name=\"transport\">" +
       ["stdio", "http", "sse"].map((t) => '<option' + (m.transport === t ? " selected" : "") + ">" + t + "</option>").join("") +
       "</select></label>" +
-      "<label>命令<input name=\"command\" value=\"" + escapeHtml(m.command || "") + '" placeholder="stdio 可执行文件"></label>' +
+      "<label>命令<input name=\"command\" value=\"" + escapeHtml(m.command || "") + '\"></label>' +
       "<label>URL<input name=\"url\" value=\"" + escapeHtml(m.url || "") + '" placeholder="http/sse 端点"></label>' +
-      "<label>描述<input name=\"description\" value=\"" + escapeHtml(m.description || "") + '"></label>' +
+      "<label>描述<input name=\"description\" value=\"" + escapeHtml(m.description || "") + '\"></label>' +
       '<div class="edit-actions"><button type="submit" class="act">保存</button>' +
       '<button type="button" class="act" data-cancel>取消</button></div>';
     form.querySelector("[data-cancel]").onclick = () => form.remove();
@@ -308,11 +387,12 @@ async function renderSkills() {
   const c = panel();
   const res = await api("/api/skills");
   if (seq !== render_seq || panel_owner !== seq) return;
+  stampPanel("skills");
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const list = res.data || [];
   if (!list.length) { c.innerHTML = '<div class="empty">暂无 Skill</div>'; return; }
   c.innerHTML = '<div class="section-head"><span class="section-title">SKILLS — ' + pad2(list.length) +
-    ' ENTRIES · 点行展开</span><button class="act" id="skills-refresh">刷新 ↻</button></div>';
+    ' ENTRIES · 点行展开 <span id="panel-stamp" class="panel-stamp"></span></span><button class="act" id="skills-refresh">刷新 ↻</button></div>';
   $("#skills-refresh").onclick = renderSkills;
   for (const s of list) {
     const entry = document.createElement("section");
@@ -343,6 +423,7 @@ async function renderSkills() {
     };
     c.appendChild(entry);
   }
+  paintStamp();
 }
 
 async function renderAgent() {
@@ -350,6 +431,7 @@ async function renderAgent() {
   const c = panel();
   const res = await api("/api/overview");
   if (seq !== render_seq || panel_owner !== seq) return;
+  stampPanel("agent");
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const d = res.data || {};
   const running = d.runtime && d.runtime.running;
@@ -359,7 +441,7 @@ async function renderAgent() {
       : '<span class="dot"></span><span class="runtime-word">STOPPED</span>');
   const rt = running ? '<span class="state ok"><span class="glyph">●</span>运行中</span>' : '<span class="state warn"><span class="glyph">○</span>未运行</span>';
   const agents = d.agents || [];
-  c.innerHTML = '<div class="section-head"><span class="section-title">AGENT — RUNTIME ' + rt + '</span>' +
+  c.innerHTML = '<div class="section-head"><span class="section-title">AGENT — RUNTIME ' + rt + ' <span id="panel-stamp" class="panel-stamp"></span></span>' +
     '<span class="row-actions"><button class="act" id="agent-refresh">刷新 ↻</button>' +
     '<button class="act" id="agent-doctor">诊断</button>' +
     '<button class="act" id="agent-setup">全部更新</button></span></div>';
@@ -370,11 +452,16 @@ async function renderAgent() {
     const card = document.createElement("div");
     card.className = "card";
     const st = a.ready ? '<span class="state ok"><span class="glyph">●</span>就绪</span>' : '<span class="state warn"><span class="glyph">○</span>未就绪</span>';
+    const updatable = a.ready && a.latest_version && a.current_version && a.current_version !== a.latest_version;
     card.innerHTML = '<div class="card-title">' + escapeHtml(a.name || "-") + " " + st +
       '<span class="muted" style="margin-left:auto">当前 ' + escapeHtml(a.current_version || "未安装") +
-      (a.latest_version ? " · 最新 " + escapeHtml(a.latest_version) : "") + "</span></div>";
+      (a.latest_version ? " · 最新 " + escapeHtml(a.latest_version) : "") + "</span></div>" +
+      (updatable ? '<button class="act card-update">更新到 ' + escapeHtml(a.latest_version) + '</button>' : "");
+    const ub = card.querySelector(".card-update");
+    if (ub) ub.onclick = () => { if (confirm("更新 " + (a.name || "") + "？")) command(["agent", "install", a.name, "--yes"]); };
     c.appendChild(card);
   }
+  paintStamp();
 }
 
 async function renderUsage() {
@@ -382,6 +469,7 @@ async function renderUsage() {
   const c = panel();
   const res = await api("/api/stats");
   if (seq !== render_seq || panel_owner !== seq) return;
+  stampPanel("usage");
   if (!res || !res.ok) { c.innerHTML = '<div class="error-box">无法连接后端</div>'; return; }
   const periods = (res.data && res.data.periods) || {};
   const keys = ["24h", "48h", "7d", "30d"];
@@ -412,15 +500,41 @@ async function renderUsage() {
     tb.appendChild(tr);
   }
   t.appendChild(tb);
-  c.innerHTML = '<div class="section-head"><span class="section-title">USAGE — 缓存命中已计入</span><button class="act" id="usage-refresh">刷新 ↻</button></div>';
+  c.innerHTML = '<div class="section-head"><span class="section-title">USAGE — 缓存命中已计入 <span id="panel-stamp" class="panel-stamp"></span></span><button class="act" id="usage-refresh">刷新 ↻</button></div>';
   $("#usage-refresh").onclick = renderUsage;
   c.appendChild(t);
+  paintStamp();
 }
 
 function init() {
   renderTabs();
   renderPanel();
-  api("/api/overview").then((res) => {
+
+  /* 日志面板：清空 / 折叠 */
+  $("#log-clear").onclick = () => { logEl.textContent = ""; };
+  $("#log-toggle").onclick = () => {
+    const sec = $("#log-section");
+    sec.classList.toggle("collapsed");
+    $("#log-toggle").textContent = sec.classList.contains("collapsed") ? "展开" : "收起";
+  };
+  if (window.matchMedia && matchMedia("(max-width: 768px)").matches) {
+    $("#log-section").classList.add("collapsed");
+    $("#log-toggle").textContent = "展开";
+  }
+
+  /* 快捷键：1-5 切 tab，r 刷新当前页；输入框聚焦时忽略 */
+  document.addEventListener("keydown", (ev) => {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const tag = (ev.target && ev.target.tagName) || "";
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
+    const n = parseInt(ev.key, 10);
+    if (n >= 1 && n <= TABS.length) { switchTab(TABS[n - 1][0]); return; }
+    if (ev.key === "r" || ev.key === "R") { renderPanel(); }
+  });
+
+  /* 运行时状态轮询：15s 一次，静默更新顶栏 RUNNING */
+  async function refreshRuntime() {
+    const res = await api("/api/overview");
     if (res && res.ok) {
       const running = res.data && res.data.runtime && res.data.runtime.running;
       updateStat("#stat-runtime",
@@ -428,13 +542,16 @@ function init() {
           ? '<span class="dot on"></span><span class="runtime-word">RUNNING</span>'
           : '<span class="dot"></span><span class="runtime-word">STOPPED</span>');
     }
-  });
+  }
+  refreshRuntime();
+  setInterval(refreshRuntime, 15000);
+
   $("#stop-btn").onclick = async () => {
     const res = await api("/api/web/stop", { method: "POST" });
     if (res && res.ok) {
-      alert(res.warning ? "已停止。注意：" + res.warning : "已切回 TUI，下次启动将直接进入 TUI");
+      toast(res.warning ? "已停止。注意：" + res.warning : "已切回 TUI，下次启动将直接进入 TUI", "ok");
     } else {
-      alert((res && res.error) || "停止失败");
+      toast((res && res.error) || "停止失败", "warn");
     }
   };
   setInterval(() => { if (current === "usage") renderUsage(); }, 10000);
